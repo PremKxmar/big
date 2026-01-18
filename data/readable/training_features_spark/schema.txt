@@ -1,0 +1,30 @@
+Parquet File: training_features_spark.parquet
+Total Rows: 499,817
+Total Columns: 23
+============================================================
+
+SCHEMA:
+----------------------------------------
+  hour: int
+  day_of_week: int
+  month: int
+  is_weekend: int
+  is_rush_hour: int
+  is_night: int
+  cell_lat: int
+  cell_lon: int
+  is_manhattan_int: int
+  prev_trip_count: bigint
+  prev_avg_speed: double
+  prev_congestion_label: int
+  prev_2h_trip_count: bigint
+  prev_2h_avg_speed: double
+  historical_avg_trips: double
+  historical_avg_speed: double
+  congestion_label: int
+  congestion_level: string
+  avg_speed: double
+  cell_id: string
+  hour_bucket: timestamp
+  year: int
+  dataset_split: string

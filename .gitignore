@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# Data (Too large for GitHub)
+data/raw/*.csv
+*.csv
+*.parquet
+data/processed/*.parquet
+
+# Build
+dist/
+build/
+.vite/
+
+# Logs
+*.log

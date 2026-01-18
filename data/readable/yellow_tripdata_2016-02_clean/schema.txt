@@ -1,0 +1,27 @@
+Parquet File: yellow_tripdata_2016-02_clean.parquet
+Total Rows: 11,079,479
+Total Columns: 20
+============================================================
+
+SCHEMA:
+----------------------------------------
+  pickup_datetime: timestamp
+  dropoff_datetime: timestamp
+  pickup_lat: double
+  pickup_lon: double
+  dropoff_lat: double
+  dropoff_lon: double
+  trip_distance: double
+  duration_hours: double
+  speed_mph: double
+  passenger_count: int
+  fare_amount: double
+  total_amount: double
+  cell_id: string
+  cell_lat: int
+  cell_lon: int
+  hour: int
+  day_of_week: int
+  month: int
+  year: int
+  is_manhattan: boolean
