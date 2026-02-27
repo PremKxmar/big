@@ -50,6 +50,7 @@ SPARK_CONFIG = {
 
 HDFS_CONFIG = {
     "namenode": "hdfs://localhost:9000",
+    "namenode_docker": "hdfs://namenode:9000",  # Use this when running inside Docker
     "raw_dir": "/smart-city-traffic/data/raw",
     "processed_dir": "/smart-city-traffic/data/processed",
     "models_dir": "/smart-city-traffic/data/models",
@@ -105,13 +106,24 @@ MANHATTAN_BOUNDS = {
 # =============================================================================
 
 def setup_windows_hadoop():
-    """Set up Hadoop environment for Windows."""
+    """Set up Hadoop environment for Windows.
+    
+    Configures HADOOP_HOME and disables NativeIO to avoid the
+    'NativeIO$Windows.access0' UnsatisfiedLinkError on Windows when
+    the winutils.exe version doesn't match the Hadoop JARs bundled
+    with Spark (Hadoop 3.4.1 in PySpark 4.0.1).
+    """
     if os.name == 'nt':  # Windows
         hadoop_home = r"C:\hadoop"
         os.environ['HADOOP_HOME'] = hadoop_home
         os.environ['hadoop.home.dir'] = hadoop_home
         if hadoop_home not in os.environ.get('PATH', ''):
             os.environ['PATH'] = os.environ.get('PATH', '') + f";{hadoop_home}\\bin"
+        
+        # Disable NativeIO — prevents UnsatisfiedLinkError with
+        # mismatched winutils.exe versions on Windows
+        os.environ['HADOOP_OPTS'] = os.environ.get('HADOOP_OPTS', '') + \
+            ' -Dorg.apache.hadoop.io.nativeio.NativeIO$POSIX$Stat.useFallback=true'
 
 
 def create_spark_session(
@@ -180,9 +192,14 @@ def create_spark_session(
     
     # Add extra configs for cluster mode
     if use_cluster:
+        # Use the Docker network gateway IP so workers can reach the driver
+        # This is the gateway of the 'backend_traffic-network' Docker network
+        host_ip = "172.21.0.1"
         builder = builder \
             .config("spark.submit.deployMode", "client") \
-            .config("spark.dynamicAllocation.enabled", "false")
+            .config("spark.dynamicAllocation.enabled", "false") \
+            .config("spark.driver.host", host_ip) \
+            .config("spark.driver.bindAddress", "0.0.0.0")
     
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("WARN")

@@ -4,7 +4,7 @@ Smart City Traffic - Flask API Server
 
 REST API backend for the traffic dashboard:
 - Serves current traffic state
-- Provides ML predictions
+- Provides ML predictions using the actual Spark MLlib model
 - WebSocket for real-time updates
 
 Usage:
@@ -34,7 +34,6 @@ except ImportError:
 
 import pandas as pd
 import numpy as np
-import joblib
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -72,50 +71,212 @@ def cell_index_to_coords(cell_lat_idx, cell_lon_idx):
 
 # Global state
 traffic_state = {}
-model = None
-scaler = None
+spark_session = None
+spark_model = None
 feature_columns = None
+model_type = None  # 'spark' or 'rule-based'
+model_info_data = {}
+
+
+def init_spark():
+    """Initialize a Spark session for model inference."""
+    global spark_session
+
+    try:
+        # Windows-specific Hadoop workaround
+        if os.name == 'nt':
+            hadoop_home = r"C:\hadoop"
+            os.environ['HADOOP_HOME'] = hadoop_home
+            os.environ['hadoop.home.dir'] = hadoop_home
+            # Add hadoop\bin to PATH so JVM can find hadoop.dll (NativeIO)
+            if hadoop_home not in os.environ.get('PATH', ''):
+                os.environ['PATH'] = os.environ.get('PATH', '') + f";{hadoop_home}\\bin"
+
+        from pyspark.sql import SparkSession
+
+        spark_session = SparkSession.builder \
+            .appName("SmartCityTraffic-API") \
+            .master("local[*]") \
+            .config("spark.driver.memory", "2g") \
+            .config("spark.executor.memory", "2g") \
+            .config("spark.sql.shuffle.partitions", "10") \
+            .getOrCreate()
+
+        spark_session.sparkContext.setLogLevel("ERROR")
+        print("✓ Spark session initialized for model inference")
+        return True
+    except Exception as e:
+        print(f"✗ Could not initialize Spark: {e}")
+        return False
 
 
 def load_model():
-    """Load the trained ML model."""
-    global model, scaler, feature_columns
-    
-    model_path = MODELS_DIR / "congestion_model.joblib"
-    scaler_path = MODELS_DIR / "scaler.joblib"
-    features_path = MODELS_DIR / "feature_columns.json"
-    
-    if model_path.exists():
-        model = joblib.load(model_path)
-        print(f"✓ Loaded model: {model_path}")
-    else:
-        print(f"✗ Model not found: {model_path}")
-    
-    if scaler_path.exists():
-        scaler = joblib.load(scaler_path)
-        print(f"✓ Loaded scaler: {scaler_path}")
-    else:
-        print(f"✗ Scaler not found: {scaler_path}")
-    
+    """
+    Load the trained Spark MLlib model for real predictions.
+    Falls back to rule-based if Spark is unavailable.
+    """
+    global spark_model, feature_columns, model_type, model_info_data
+
+    features_path = MODELS_DIR / "feature_columns_spark.json"
+    model_info_path = MODELS_DIR / "model_info_spark.json"
+    spark_model_path = MODELS_DIR / "spark_congestion_model"
+
+    # Load feature column names
     if features_path.exists():
         with open(features_path, 'r') as f:
             feature_columns = json.load(f)
-        print(f"✓ Loaded features: {len(feature_columns)} columns")
+        print(f"✓ Loaded feature columns: {len(feature_columns)} features")
     else:
-        print(f"✗ Features not found: {features_path}")
+        feature_columns = [
+            "hour", "day_of_week", "month", "is_weekend", "is_rush_hour", "is_night",
+            "cell_lat", "cell_lon", "is_manhattan_int",
+            "prev_trip_count", "prev_avg_speed", "prev_congestion_label",
+            "prev_2h_trip_count", "prev_2h_avg_speed",
+            "historical_avg_trips", "historical_avg_speed"
+        ]
+        print(f"⚠ Using default feature columns ({len(feature_columns)})")
+
+    # Load model metadata
+    if model_info_path.exists():
+        with open(model_info_path, 'r') as f:
+            model_info_data = json.load(f)
+        print(f"✓ Model info: {model_info_data.get('model_type', 'Unknown')}, "
+              f"Accuracy: {model_info_data.get('metrics', {}).get('test_accuracy', 'N/A')}")
+
+    # Attempt to load the actual Spark MLlib PipelineModel
+    if spark_model_path.exists() and spark_session is not None:
+        try:
+            from pyspark.ml import PipelineModel
+
+            spark_model = PipelineModel.load(str(spark_model_path))
+            model_type = 'spark'
+            print(f"✓ Spark MLlib PipelineModel loaded from: {spark_model_path}")
+            return
+        except Exception as e:
+            print(f"⚠ Failed to load Spark model: {e}")
+
+    # Fallback
+    model_type = 'rule-based'
+    print("⚠ Using rule-based prediction fallback (Spark model not available)")
+
+
+def predict_congestion(features_dict):
+    """
+    Make a congestion prediction using the loaded model.
+
+    If the Spark MLlib model is loaded, it creates a single-row DataFrame,
+    runs it through the pipeline, and returns the prediction + probability.
+    Otherwise falls back to a rule-based heuristic.
+
+    Args:
+        features_dict: dict mapping feature column names to their values
+
+    Returns:
+        dict with 'prediction' (int), 'level' (str), 'confidence' (float)
+    """
+    level_map = {0: 'Low', 1: 'Medium', 2: 'High'}
+
+    # ---- Spark MLlib model ----
+    if spark_model is not None and spark_session is not None:
+        try:
+            # Build a row with exactly the feature columns the model expects
+            row = {col: float(features_dict.get(col, 0)) for col in feature_columns}
+            input_df = spark_session.createDataFrame([row])
+
+            predictions_df = spark_model.transform(input_df)
+            result = predictions_df.select("prediction", "probability").first()
+
+            prediction = int(result["prediction"])
+            probability = float(result["probability"].toArray().max())
+
+            return {
+                'prediction': prediction,
+                'level': level_map.get(prediction, 'Unknown'),
+                'confidence': round(probability, 3),
+                'model_used': 'spark-mllib'
+            }
+        except Exception as e:
+            # If Spark prediction fails for this row, fall through to rule-based
+            pass
+
+    # ---- Rule-based fallback ----
+    avg_speed = features_dict.get('prev_avg_speed', 15)
+    is_rush = features_dict.get('is_rush_hour', 0)
+    is_manhattan = features_dict.get('is_manhattan_int', 0)
+
+    if avg_speed < 10 or (avg_speed < 15 and is_rush and is_manhattan):
+        prediction, confidence = 2, 0.82
+    elif avg_speed < 20:
+        prediction, confidence = 1, 0.75
+    else:
+        prediction, confidence = 0, 0.80
+
+    return {
+        'prediction': prediction,
+        'level': level_map.get(prediction, 'Unknown'),
+        'confidence': confidence,
+        'model_used': 'rule-based'
+    }
 
 
 def load_cell_data():
     """Load cell statistics for API responses."""
     global traffic_state
     
-    # Try to load training features first (actual data from feature engineering)
+    # Try to load Spark training features (actual data from feature engineering)
+    features_spark_path = DATA_DIR / "training_features_spark.parquet"
     features_path = DATA_DIR / "training_features.parquet"
     cells_path = DATA_DIR / "cell_statistics.parquet"
     
-    if features_path.exists():
-        print(f"Loading from training_features.parquet...")
+    # Priority: Spark features > legacy features > cell statistics
+    data_loaded = False
+    
+    if features_spark_path.exists():
+        print(f"Loading from training_features_spark.parquet (Spark model data)...")
+        df = pd.read_parquet(features_spark_path)
+        data_loaded = True
+        
+        # Group by cell to get unique cells with their stats
+        for _, row in df.iterrows():
+            cell_id = f"cell_{int(row['cell_lat'])}_{int(row['cell_lon'])}"
+            
+            # Convert cell indices to real geographic coordinates
+            real_lat, real_lon = cell_index_to_coords(int(row['cell_lat']), int(row['cell_lon']))
+            
+            # Use historical_avg_speed or prev_avg_speed for congestion calculation
+            avg_speed = float(row.get('historical_avg_speed', row.get('prev_avg_speed', 15.0)))
+            
+            # Calculate congestion based on speed
+            if avg_speed > 20:
+                congestion_level = 'low'
+                congestion_index = 0.3 - (avg_speed - 20) * 0.01
+            elif avg_speed > 10:
+                congestion_level = 'medium'
+                congestion_index = 0.7 - (avg_speed - 10) * 0.04
+            else:
+                congestion_level = 'high'
+                congestion_index = 1.0 - avg_speed * 0.03
+            
+            congestion_index = max(0.1, min(0.95, congestion_index))
+            
+            traffic_state[cell_id] = {
+                'cell_id': cell_id,
+                'latitude': round(real_lat, 6),
+                'longitude': round(real_lon, 6),
+                'congestion_index': round(congestion_index, 3),
+                'congestion_level': congestion_level,
+                'vehicle_count': int(row.get('prev_trip_count', 10)),
+                'avg_speed': round(avg_speed, 1),
+                'hour': int(row['hour']),
+                'is_manhattan': bool(row['is_manhattan_int']),
+                'last_update': datetime.utcnow().isoformat()
+            }
+        print(f"✓ Loaded {len(traffic_state)} cells from Spark training data")
+    
+    elif features_path.exists():
+        print(f"⚠ Loading from legacy training_features.parquet (consider regenerating with Spark)...")
         df = pd.read_parquet(features_path)
+        data_loaded = True
         
         # Group by cell to get unique cells with their stats
         for _, row in df.iterrows():
@@ -150,8 +311,11 @@ def load_cell_data():
                 'is_manhattan': bool(row['is_manhattan']),
                 'last_update': datetime.utcnow().isoformat()
             }
-        print(f"✓ Loaded {len(traffic_state)} cells from training data")
-    elif cells_path.exists():
+        print(f"✓ Loaded {len(traffic_state)} cells from legacy training data")
+        data_loaded = True
+    
+    if not data_loaded and cells_path.exists():
+        print(f"Loading from cell_statistics.parquet...")
         df = pd.read_parquet(cells_path)
         for _, row in df.iterrows():
             traffic_state[row['cell_id']] = {
@@ -165,8 +329,11 @@ def load_cell_data():
                 'last_update': datetime.utcnow().isoformat()
             }
         print(f"✓ Loaded {len(traffic_state)} cells from cell_statistics")
-    else:
+        data_loaded = True
+    
+    if not data_loaded:
         # Generate sample data if no real data exists
+        print("⚠ No training data found, generating sample data...")
         generate_sample_data()
 
 
@@ -220,8 +387,10 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat() + 'Z',
-        'version': '1.0.0',
-        'model_loaded': model is not None,
+        'version': '2.0.0',
+        'model_type': model_type or 'rule-based',
+        'spark_model_loaded': spark_model is not None,
+        'spark_session_active': spark_session is not None,
         'cells_loaded': len(traffic_state)
     })
 
@@ -249,42 +418,67 @@ def get_current_traffic():
 
 @app.route('/api/predictions', methods=['GET'])
 def get_predictions():
-    """Get ML predictions for congestion."""
+    """Get ML predictions for congestion using Spark MLlib model."""
     horizon = request.args.get('horizon_minutes', 15, type=int)
     min_confidence = request.args.get('min_confidence', 0.7, type=float)
-    
+
     predictions = []
-    
+    current_hour = datetime.now().hour
+
     for cell_id, cell in list(traffic_state.items())[:100]:  # Limit for performance
-        # Simple prediction: slight increase/decrease based on time
-        current_level = cell['congestion_level']
-        current_index = cell['congestion_index']
-        
-        # Simulate prediction (in real system, use ML model)
-        change = random.uniform(-0.1, 0.15)
-        predicted_index = min(1.0, max(0.0, current_index + change))
-        confidence = random.uniform(0.7, 0.95)
-        
-        if confidence >= min_confidence:
+        # Build the feature vector that the Spark MLlib pipeline expects
+        features = {
+            'hour': current_hour,
+            'day_of_week': datetime.now().weekday() + 1,
+            'month': datetime.now().month,
+            'is_weekend': 1 if datetime.now().weekday() >= 5 else 0,
+            'is_rush_hour': 1 if current_hour in [7, 8, 9, 17, 18, 19] else 0,
+            'is_night': 1 if current_hour >= 22 or current_hour <= 6 else 0,
+            'cell_lat': int(cell_id.split('_')[1]) if '_' in cell_id else 0,
+            'cell_lon': int(cell_id.split('_')[2]) if '_' in cell_id else 0,
+            'is_manhattan_int': 1 if cell.get('is_manhattan', False) else 0,
+            'prev_trip_count': cell.get('vehicle_count', 10),
+            'prev_avg_speed': cell.get('avg_speed', 15),
+            'prev_congestion_label': (
+                0 if cell['congestion_level'] == 'low'
+                else 1 if cell['congestion_level'] == 'medium'
+                else 2
+            ),
+            'prev_2h_trip_count': cell.get('vehicle_count', 10) * 0.9,
+            'prev_2h_avg_speed': cell.get('avg_speed', 15) * 1.1,
+            'historical_avg_trips': cell.get('vehicle_count', 10),
+            'historical_avg_speed': cell.get('avg_speed', 15)
+        }
+
+        # Use the real model (Spark MLlib) or rule-based fallback
+        result = predict_congestion(features)
+
+        if result['confidence'] >= min_confidence:
             predictions.append({
                 'cell_id': cell_id,
                 'latitude': cell['latitude'],
                 'longitude': cell['longitude'],
-                'current_level': current_level,
-                'current_index': round(current_index, 3),
-                'predicted_level': 'high' if predicted_index > 0.7 else 'medium' if predicted_index > 0.4 else 'low',
-                'predicted_index': round(predicted_index, 3),
-                'confidence': round(confidence, 3),
-                'change_percent': round(change * 100, 1)
+                'current_level': cell['congestion_level'],
+                'current_index': round(cell['congestion_index'], 3),
+                'predicted_level': result['level'].lower(),
+                'predicted_index': round(result['prediction'] / 2.0, 3),
+                'confidence': result['confidence'],
+                'change_percent': round((result['prediction'] / 2.0 - cell['congestion_index']) * 100, 1),
+                'model_used': result['model_used']
             })
-    
+
     # Sort by predicted congestion
     predictions = sorted(predictions, key=lambda x: x['predicted_index'], reverse=True)
-    
+
+    # Model accuracy from metadata
+    ml_metrics = model_info_data.get('metrics', {})
+    accuracy = ml_metrics.get('test_accuracy', 0.786)
+
     return jsonify({
         'timestamp': datetime.utcnow().isoformat() + 'Z',
         'prediction_horizon': f'{horizon} minutes',
-        'model_accuracy': 0.824,
+        'model_type': model_type or 'rule-based',
+        'model_accuracy': round(accuracy, 4),
         'predictions': predictions
     })
 
@@ -323,11 +517,38 @@ def get_hotspots():
 
 @app.route('/api/cell/<cell_id>', methods=['GET'])
 def get_cell_details(cell_id):
-    """Get detailed info for a specific cell."""
+    """Get detailed info for a specific cell with ML prediction."""
     if cell_id not in traffic_state:
         return jsonify({'error': 'Cell not found', 'cell_id': cell_id}), 404
     
     cell = traffic_state[cell_id]
+    current_hour = datetime.now().hour
+
+    # Build features and predict
+    features = {
+        'hour': current_hour,
+        'day_of_week': datetime.now().weekday() + 1,
+        'month': datetime.now().month,
+        'is_weekend': 1 if datetime.now().weekday() >= 5 else 0,
+        'is_rush_hour': 1 if current_hour in [7, 8, 9, 17, 18, 19] else 0,
+        'is_night': 1 if current_hour >= 22 or current_hour <= 6 else 0,
+        'cell_lat': int(cell_id.split('_')[1]) if '_' in cell_id else 0,
+        'cell_lon': int(cell_id.split('_')[2]) if '_' in cell_id else 0,
+        'is_manhattan_int': 1 if cell.get('is_manhattan', False) else 0,
+        'prev_trip_count': cell.get('vehicle_count', 10),
+        'prev_avg_speed': cell.get('avg_speed', 15),
+        'prev_congestion_label': (
+            0 if cell['congestion_level'] == 'low'
+            else 1 if cell['congestion_level'] == 'medium'
+            else 2
+        ),
+        'prev_2h_trip_count': cell.get('vehicle_count', 10) * 0.9,
+        'prev_2h_avg_speed': cell.get('avg_speed', 15) * 1.1,
+        'historical_avg_trips': cell.get('vehicle_count', 10),
+        'historical_avg_speed': cell.get('avg_speed', 15)
+    }
+
+    result = predict_congestion(features)
     
     return jsonify({
         'cell_id': cell_id,
@@ -342,9 +563,10 @@ def get_cell_details(cell_id):
             'avg_speed': cell['avg_speed']
         },
         'prediction': {
-            'predicted_level': cell['congestion_level'],
-            'predicted_index': cell['congestion_index'] + random.uniform(-0.1, 0.1),
-            'confidence': round(random.uniform(0.75, 0.92), 2),
+            'predicted_level': result['level'].lower(),
+            'predicted_index': round(result['prediction'] / 2.0, 3),
+            'confidence': result['confidence'],
+            'model_used': result['model_used'],
             'horizon': '15 minutes'
         },
         'last_update': cell['last_update']
@@ -365,15 +587,8 @@ def get_stats():
     
     levels = [c['congestion_level'] for c in cells]
     
-    # Load actual model info if available
-    model_info_path = MODELS_DIR / "model_info.json"
-    if model_info_path.exists():
-        with open(model_info_path, 'r') as f:
-            model_info = json.load(f)
-        ml_metrics = model_info.get('metrics', {})
-    else:
-        # Spark MLlib model accuracy: 78.60% (realistic, no data leakage)
-        ml_metrics = {'accuracy': 0.786, 'precision': 0.787, 'recall': 0.786, 'f1_score': 0.768}
+    # Use actual model metadata
+    ml_metrics = model_info_data.get('metrics', {})
     
     return jsonify({
         'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -392,10 +607,11 @@ def get_stats():
         },
         'ml_model': {
             'name': 'Random Forest Classifier (Spark MLlib)',
-            'accuracy': ml_metrics.get('accuracy', 0.786),
-            'precision': ml_metrics.get('precision', 0.787),
-            'recall': ml_metrics.get('recall', 0.786),
-            'f1_score': ml_metrics.get('f1_score', 0.768)
+            'type': model_type or 'rule-based',
+            'accuracy': ml_metrics.get('test_accuracy', 0.786),
+            'precision': ml_metrics.get('test_precision', 0.787),
+            'recall': ml_metrics.get('test_recall', 0.786),
+            'f1_score': ml_metrics.get('test_f1', 0.768)
         }
     })
 
@@ -536,8 +752,13 @@ def main():
     print("="*60)
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Load model and data
+    # Initialize Spark session (for Spark MLlib model inference)
+    init_spark()
+
+    # Load model (tries Spark MLlib first, falls back to rule-based)
     load_model()
+
+    # Load cell data
     load_cell_data()
     
     # Start background updater
@@ -547,14 +768,18 @@ def main():
     
     # Run server
     print("\n" + "="*60)
+    print(f"Model Type: {model_type}")
+    print(f"Spark Model Loaded: {spark_model is not None}")
+    print(f"Cells Loaded: {len(traffic_state)}")
+    print("="*60)
     print("API Server starting on http://localhost:5000")
     print("="*60)
     print("\nEndpoints:")
     print("  GET  /api/health          - Health check")
     print("  GET  /api/current-traffic - Current congestion")
-    print("  GET  /api/predictions     - ML predictions")
+    print("  GET  /api/predictions     - ML predictions (Spark MLlib)")
     print("  GET  /api/hotspots        - Top congested zones")
-    print("  GET  /api/cell/<id>       - Cell details")
+    print("  GET  /api/cell/<id>       - Cell details + prediction")
     print("  GET  /api/stats           - Statistics")
     print("  GET  /api/geojson/cells   - GeoJSON for Kepler.gl")
     print("  GET  /api/geojson/vehicles - Vehicle positions")

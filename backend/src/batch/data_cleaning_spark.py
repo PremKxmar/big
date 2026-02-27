@@ -34,8 +34,10 @@ from pyspark.sql.types import (
 )
 
 # Add project root to path
+# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 # Import centralized config
 from config.spark_config import create_spark_session, HDFS_CONFIG, NYC_BOUNDS
@@ -44,10 +46,12 @@ from config.spark_config import create_spark_session, HDFS_CONFIG, NYC_BOUNDS
 # CONFIGURATION
 # =============================================================================
 
-# HDFS Configuration
-HDFS_NAMENODE = "hdfs://localhost:9000"
-HDFS_RAW_DIR = "/smart-city-traffic/data/raw"
-HDFS_PROCESSED_DIR = "/smart-city-traffic/data/processed"
+# HDFS Configuration (from centralized config)
+# Note: When running inside Docker (cluster mode), use namenode_docker
+HDFS_NAMENODE = HDFS_CONFIG["namenode"]
+HDFS_NAMENODE_DOCKER = HDFS_CONFIG.get("namenode_docker", "hdfs://namenode:9000")
+HDFS_RAW_DIR = HDFS_CONFIG["raw_dir"]
+HDFS_PROCESSED_DIR = HDFS_CONFIG["processed_dir"]
 
 # Local Configuration
 LOCAL_RAW_DIR = Path(r"c:\sem6-real\bigdata\vscode")
@@ -80,14 +84,17 @@ def get_taxi_files_local():
     return [str(f) for f in files]
 
 
-def get_taxi_files_hdfs(spark):
+def get_taxi_files_hdfs(spark, namenode=None):
     """Find all taxi CSV files in HDFS."""
+    # Use the provided namenode or default to HDFS_NAMENODE
+    hdfs_namenode = namenode or HDFS_NAMENODE
     print(f"\nLooking for taxi data files in HDFS: {HDFS_RAW_DIR}")
+    print(f"  Using namenode: {hdfs_namenode}")
     
     # Use Spark to list HDFS directory
     hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
     fs = spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(
-        spark.sparkContext._jvm.java.net.URI(HDFS_NAMENODE),
+        spark.sparkContext._jvm.java.net.URI(hdfs_namenode),
         hadoop_conf
     )
     
@@ -326,8 +333,10 @@ def main():
     
     # Get taxi files based on mode
     if use_hdfs:
-        taxi_files = get_taxi_files_hdfs(spark)
-        output_base = f"{HDFS_NAMENODE}{HDFS_PROCESSED_DIR}"
+        # When using cluster mode, we're running inside Docker so use Docker namenode
+        namenode = HDFS_NAMENODE_DOCKER if use_cluster else HDFS_NAMENODE
+        taxi_files = get_taxi_files_hdfs(spark, namenode=namenode)
+        output_base = f"{namenode}{HDFS_PROCESSED_DIR}"
     else:
         taxi_files = get_taxi_files_local()
         output_base = str(LOCAL_PROCESSED_DIR)

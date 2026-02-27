@@ -346,8 +346,8 @@ Spark Session Created
     print("\n📥 Creating Kafka Stream...")
     stream_df = create_kafka_stream(spark)
     
-    # Add predictions
-    predicted_df = add_congestion_prediction(stream_df, model=None)  # Use rule-based for streaming
+    # Add predictions (uses ML model if loaded, rule-based fallback otherwise)
+    predicted_df = add_congestion_prediction(stream_df, model=model)
     
     # Create aggregations
     agg_df = create_aggregations(predicted_df)

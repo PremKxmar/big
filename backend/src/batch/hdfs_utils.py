@@ -22,8 +22,10 @@ import subprocess
 import argparse
 
 # Add project root to path
+# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 # Configuration - HDFS paths
 HDFS_NAMENODE = "hdfs://localhost:9000"
@@ -47,7 +49,8 @@ def get_hdfs_uri(path):
 
 def run_hdfs_command(cmd, check=True):
     """Run an HDFS command using docker exec to namenode container."""
-    # Use docker exec to run HDFS commands inside the namenode container
+    # Use docker exec to run HDFS c
+    # ommands inside the namenode container
     full_cmd = f'docker exec namenode hdfs dfs {cmd}'
     print(f"Running: hdfs dfs {cmd}")
     
@@ -112,20 +115,21 @@ def create_hdfs_directories():
 
 def upload_with_spark():
     """Upload data to HDFS using PySpark (handles large files better)."""
-    from pyspark.sql import SparkSession
+    # Import centralized config
+    from config.spark_config import create_spark_session
     
     print("\n" + "=" * 60)
     print("Uploading data to HDFS using Spark")
     print("=" * 60)
     
     # Create Spark session with HDFS config
-    spark = SparkSession.builder \
-        .appName("HDFS-Upload") \
-        .config("spark.hadoop.fs.defaultFS", HDFS_NAMENODE) \
-        .master("local[*]") \
-        .getOrCreate()
-    
-    spark.sparkContext.setLogLevel("WARN")
+    # NOTE: Must use local mode for upload because cluster workers 
+    # cannot access the external C:\ drive path where raw data sits.
+    spark = create_spark_session(
+        app_name="HDFS-Upload",
+        use_cluster=False,  # Force local mode for file visibility
+        use_hdfs=True
+    )
     
     # Upload raw CSV files
     csv_files = list(LOCAL_RAW_DIR.glob("yellow_tripdata_*.csv"))
@@ -134,8 +138,10 @@ def upload_with_spark():
         print(f"\nUploading {len(csv_files)} CSV files to HDFS...")
         for csv_file in csv_files:
             print(f"  Reading: {csv_file.name}...")
+            # Read local CSV
             df = spark.read.option("header", "true").csv(str(csv_file))
             
+            # Write to HDFS
             hdfs_path = f"{HDFS_NAMENODE}{HDFS_RAW_DIR}/{csv_file.stem}"
             print(f"  Writing to: {hdfs_path}")
             df.write.mode("overwrite").option("header", "true").csv(hdfs_path)
@@ -215,7 +221,7 @@ def upload_to_hdfs():
     
     # Upload raw CSV files using docker cp + hdfs put
     csv_files = list(LOCAL_RAW_DIR.glob("yellow_tripdata_*.csv"))
-    
+        
     if csv_files:
         print(f"\nUploading {len(csv_files)} CSV files to HDFS...")
         for csv_file in csv_files:

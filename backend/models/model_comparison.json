@@ -1,0 +1,30 @@
+{
+  "rf": {
+    "name": "Random Forest",
+    "test_accuracy": 0.7856,
+    "test_precision": 0.787,
+    "test_recall": 0.7856,
+    "test_f1": 0.7675,
+    "train_accuracy": 0.7838,
+    "training_seconds": 61.6
+  },
+  "gbt": {
+    "name": "Gradient Boosted Trees",
+    "test_accuracy": 0.7924,
+    "test_precision": 0.7888,
+    "test_recall": 0.7924,
+    "test_f1": 0.7801,
+    "train_accuracy": 0.7993,
+    "training_seconds": 165.0
+  },
+  "lr": {
+    "name": "Logistic Regression",
+    "test_accuracy": 0.765,
+    "test_precision": 0.7626,
+    "test_recall": 0.765,
+    "test_f1": 0.7417,
+    "train_accuracy": 0.7611,
+    "training_seconds": 6.5
+  },
+  "best_model": "gbt"
+}

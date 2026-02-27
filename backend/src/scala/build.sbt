@@ -4,9 +4,9 @@ scalaVersion := "2.12.18"
 
 // Spark dependencies
 libraryDependencies ++= Seq(
-  "org.apache.spark" %% "spark-core" % "3.5.0" % "provided",
-  "org.apache.spark" %% "spark-sql" % "3.5.0" % "provided",
-  "org.apache.spark" %% "spark-mllib" % "3.5.0" % "provided"
+  "org.apache.spark" %% "spark-core" % "3.5.0",
+  "org.apache.spark" %% "spark-sql" % "3.5.0",
+  "org.apache.spark" %% "spark-mllib" % "3.5.0"
 )
 
 // Assembly settings for creating fat JAR

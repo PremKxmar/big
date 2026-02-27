@@ -212,6 +212,50 @@ services:
     networks:
       - traffic-network
 
+  # ===========================================
+  # MONITORING SERVICES
+  # ===========================================
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: prometheus
+    restart: always
+    ports:
+      - "9090:9090" # Prometheus Web UI
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - traffic-network
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: grafana
+    restart: always
+    depends_on:
+      - prometheus
+    ports:
+      - "3001:3000" # Grafana Web UI (3001 to avoid conflict with frontend)
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=smartcity
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - traffic-network
+
 # ===========================================
 # VOLUMES
 # ===========================================
@@ -224,10 +268,12 @@ volumes:
   zookeeper_logs:
   kafka_data:
   spark_data:
+  prometheus_data:
+  grafana_data:
 
-    # ===========================================
-    # NETWORKS
-    # ===========================================
+# ===========================================
+# NETWORKS
+# ===========================================
 networks:
   traffic-network:
     driver: bridge

@@ -40,8 +40,10 @@ from pyspark.sql.window import Window
 from pyspark.sql.types import IntegerType, DoubleType, BooleanType
 
 # Add project root to path
+# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 # Import centralized config
 from config.spark_config import create_spark_session, HDFS_CONFIG
