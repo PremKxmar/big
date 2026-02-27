@@ -42,7 +42,8 @@ This project is a **Real-Time Traffic Simulation and Prediction System** that pr
 | **Data Processed** | 7+ GB |
 | **Total Trips Analyzed** | 46,000,000+ |
 | **Grid Cells** | 327 unique traffic zones |
-| **ML Model Accuracy** | 100% |
+| **Best ML Model** | GBT + OneVsRest — 79.24% accuracy |
+| **Models Compared** | 3 (Random Forest, GBT+OneVsRest, Logistic Regression) |
 | **Real-time Events** | 1000+ events/second |
 | **Update Frequency** | Every 5 seconds |
 
@@ -522,23 +523,30 @@ npm run dev
 
 | Requirement | Implementation | Status |
 |-------------|----------------|--------|
-| **Distributed Processing** | Apache Spark (PySpark) for batch ETL | ✅ |
-| **Streaming Pipeline** | Kafka for event streaming | ✅ |
-| **Machine Learning** | Random Forest Classifier (100% accuracy) | ✅ |
-| **REST API** | Flask with multiple endpoints | ✅ |
+| **Distributed Processing** | Apache Spark (PySpark 4.0.1) for batch ETL | ✅ |
+| **RDD API** | `traffic_rdd_analysis.py` — 6 analyses on 45.9M real trips | ✅ |
+| **DataFrame API** | Data cleaning, feature engineering, model training | ✅ |
+| **Dataset API (Scala)** | `TrafficDataPreprocessor.scala` (406 lines) | ✅ |
+| **Streaming Pipeline** | Kafka + Spark Structured Streaming + E2E test | ✅ |
+| **Machine Learning** | 3-model comparison (RF/GBT+OneVsRest/LR), best=79.24% | ✅ |
+| **REST API** | Flask with multiple endpoints + Prometheus /metrics | ✅ |
 | **Real-time Dashboard** | React + Leaflet + WebSocket | ✅ |
 | **Data Visualization** | Interactive maps, charts, KPIs | ✅ |
+| **Monitoring** | Prometheus + Grafana in Docker | ✅ |
 
 ### Project Deliverables ✅
 
 | Deliverable | Location | Status |
 |-------------|----------|--------|
-| **Data Cleaning Scripts** | `src/batch/data_cleaning.py` | ✅ |
-| **Feature Engineering** | `src/batch/feature_engineering.py` | ✅ |
-| **ML Model Training** | `src/batch/model_training.py` | ✅ |
-| **Trained Model** | `models/congestion_model.joblib` | ✅ |
+| **Data Cleaning Scripts** | `src/batch/data_cleaning_spark.py` | ✅ |
+| **Feature Engineering** | `src/batch/feature_engineering_spark.py` | ✅ |
+| **ML Model Training** | `src/batch/model_training_spark.py` (RF/GBT/LR) | ✅ |
+| **RDD Analysis** | `src/batch/traffic_rdd_analysis.py` (573 lines) | ✅ |
+| **Trained Model** | `models/spark_congestion_model/` (GBT+OneVsRest) | ✅ |
+| **Pipeline Orchestrator** | `run_pipeline_local.py` | ✅ |
 | **REST API** | `src/api/app.py` | ✅ |
-| **Frontend Dashboard** | `bigdata/` folder | ✅ |
+| **Streaming E2E Test** | `src/streaming/streaming_e2e_test.py` (802 lines) | ✅ |
+| **Frontend Dashboard** | `frontend/` folder | ✅ |
 | **Documentation** | This file + `docs/` folder | ✅ |
 
 ---
@@ -570,25 +578,29 @@ npm run dev
 
 ## 13. Future Enhancements
 
-### Potential Improvements
+### Already Implemented (beyond original scope)
 
-1. **Real Kafka Integration**
-   - Deploy Kafka cluster with Docker
-   - Implement true real-time streaming
+1. ✅ **Multi-Model Comparison** — RF vs GBT+OneVsRest vs LR (was single-model)
+2. ✅ **RDD API Analysis** — 573-line script on 45.9M real records
+3. ✅ **Prometheus + Grafana Monitoring** — Full observability stack
+4. ✅ **Pipeline Orchestrator** — `run_pipeline_local.py` master script
+5. ✅ **E2E Streaming Test** — 802-line integration test
 
-2. **Enhanced ML Models**
-   - LSTM for time-series prediction
-   - Ensemble methods for better accuracy
+### Potential Future Improvements
+
+1. **Deep Learning Models**
+   - LSTM for time-series congestion prediction
+   - GNN for road network modeling
+
+2. **Infrastructure Scaling**
+   - Cloud deployment (AWS EMR / Azure HDInsight)
+   - Kubernetes orchestration
+   - CI/CD pipeline
 
 3. **Additional Features**
    - Route optimization suggestions
    - Historical playback mode
    - Mobile responsive design
-
-4. **Infrastructure**
-   - Cloud deployment (AWS/Azure)
-   - Kubernetes orchestration
-   - CI/CD pipeline
 
 ---
 
@@ -607,4 +619,4 @@ MIT License - Feel free to use and modify for educational purposes.
 
 ---
 
-*This documentation was generated for the Smart City Traffic Intelligence project.*
+*This documentation was updated for the Smart City Traffic Intelligence project — February 27, 2026.*

@@ -2,8 +2,8 @@
 
 > A Distributed Streaming Pipeline with GeoSpatial Analysis and Deep Learning
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
-![Spark](https://img.shields.io/badge/Apache%20Spark-3.5-orange.svg)
+![Python](https://img.shields.io/badge/Python-3.11-blue.svg)
+![Spark](https://img.shields.io/badge/PySpark-4.0.1-orange.svg)
 ![Kafka](https://img.shields.io/badge/Apache%20Kafka-3.6-red.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -50,42 +50,46 @@ This project simulates and predicts city traffic in near-real-time using a 3D in
 ## 📁 Project Structure
 
 ```
-smart-city-traffic/
-├── README.md
+backend/
+├── docker-compose.yml              # HDFS, Kafka, Spark, Prometheus, Grafana (13 containers)
+├── run_pipeline_local.py           # Master pipeline orchestrator
 ├── requirements.txt
-├── docker-compose.yml
-├── .gitignore
-│
-├── data/
-│   ├── raw/                    # Symlink to CSV files
-│   └── processed/              # Cleaned parquet files
-│
-├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_feature_engineering.ipynb
-│   └── 03_model_training.ipynb
 │
 ├── src/
 │   ├── batch/
-│   │   ├── data_cleaning.py
-│   │   ├── feature_engineering.py
-│   │   └── model_training.py
+│   │   ├── data_cleaning_spark.py        # PySpark cleaning (local + HDFS)
+│   │   ├── feature_engineering_spark.py  # Window/Agg features
+│   │   ├── model_training_spark.py       # Multi-model (RF/GBT+OneVsRest/LR)
+│   │   ├── traffic_rdd_analysis.py       # RDD API on 46M real records
+│   │   └── hdfs_utils.py                # HDFS operations
 │   │
 │   ├── streaming/
-│   │   ├── kafka_producer.py
-│   │   └── spark_streaming.py
+│   │   ├── kafka_producer.py             # Trip event producer
+│   │   ├── spark_streaming_consumer.py   # Spark Structured Streaming
+│   │   ├── kafka_api_bridge.py           # API bridge consumer
+│   │   └── streaming_e2e_test.py         # E2E streaming test (802 lines)
 │   │
-│   └── api/
-│       └── app.py
+│   ├── api/
+│   │   └── app.py                        # Flask REST API + Prometheus metrics
+│   │
+│   ├── scala/
+│   │   └── TrafficDataPreprocessor.scala # Scala Dataset API preprocessing
+│   │
+│   └── config/
+│       └── spark_config.py               # Centralized Spark/HDFS config
 │
-├── models/                     # Saved ML models
+├── models/
+│   ├── spark_congestion_model/           # GBT+OneVsRest PipelineModel
+│   ├── model_info_spark.json             # Production model metadata
+│   ├── model_comparison.json             # RF vs GBT vs LR results
+│   └── feature_columns_spark.json        # 16 feature names
 │
-├── dashboard/                  # Frontend (Kepler.gl)
+├── monitoring/
+│   ├── prometheus/prometheus.yml
+│   └── grafana/
 │
-└── docs/
-    ├── architecture.md
-    ├── api_documentation.md
-    └── frontend_prompt.md
+└── data/
+    └── processed/                        # Processed Parquet files
 ```
 
 ## 🚀 Quick Start
@@ -110,10 +114,14 @@ docker-compose up -d
 
 ### 3. Run Data Pipeline
 ```bash
-# Batch processing
-python src/batch/data_cleaning.py
-python src/batch/feature_engineering.py
-python src/batch/model_training.py
+# Option A: Master orchestrator (runs everything)
+python run_pipeline_local.py
+
+# Option B: Step by step
+python src/batch/data_cleaning_spark.py          # ~600s
+python src/batch/feature_engineering_spark.py     # ~68s
+python src/batch/model_training_spark.py          # ~542s (3 models)
+python src/batch/traffic_rdd_analysis.py          # ~1104s (RDD on 46M rows)
 ```
 
 ### 4. Start Streaming
@@ -121,8 +129,11 @@ python src/batch/model_training.py
 # Terminal 1: Kafka producer
 python src/streaming/kafka_producer.py
 
-# Terminal 2: Spark streaming
-python src/streaming/spark_streaming.py
+# Terminal 2: Spark streaming consumer
+python src/streaming/spark_streaming_consumer.py
+
+# Or run E2E test
+python src/streaming/streaming_e2e_test.py
 ```
 
 ### 5. Launch Dashboard
@@ -145,10 +156,18 @@ python src/api/app.py
 
 ## 🤖 Machine Learning
 
-- **Algorithm**: Random Forest Classifier (Spark MLlib)
-- **Features**: hour, day_of_week, cell_id, avg_speed, vehicle_count
-- **Target**: Congestion level (low/medium/high)
-- **Accuracy**: ~82% (3-class classification)
+3-model comparison on **499,817 samples** (temporal split: Jan-Feb train, March test):
+
+| Model | Accuracy | F1 Score | Training Time |
+|-------|----------|----------|---------------|
+| Random Forest (100 trees) | 78.56% | 0.768 | 61.6s |
+| **GBT + OneVsRest** ⭐ | **79.24%** | **0.780** | **165.0s** |
+| Logistic Regression | 76.50% | 0.742 | 6.5s |
+
+- **Production model**: GBT + OneVsRest (best accuracy & F1)
+- **Features**: 16 engineered features (temporal, spatial, historical)
+- **Target**: 3-class congestion (Low / Medium / High)
+- **Pipeline**: VectorAssembler → StandardScaler → OneVsRest(GBTClassifier)
 
 ## 🎨 Visualization Features
 

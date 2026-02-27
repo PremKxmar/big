@@ -1,7 +1,7 @@
 # Technical Requirements Implementation Checklist
 
 ## Project: Smart City Traffic System
-**Date**: December 22, 2025
+**Date**: February 27, 2026
 
 ---
 
@@ -160,16 +160,41 @@ df.withColumn("duration_seconds",
 ```
 
 #### RDD API
-**Status**: ⚠️ **NOT EXPLICITLY USED** (DataFrame API preferred)
+**Status**: ✅ **FULLY IMPLEMENTED**
 
-**Explanation**: Modern Spark applications favor DataFrame/Dataset API over RDD because:
-- DataFrames provide Catalyst optimizer benefits
-- Better performance through Tungsten execution engine
-- Type-safe operations with compile-time checking
-- Easier to read and maintain
-- All RDD operations can be expressed via DataFrame API
+**Evidence** (`backend/src/batch/traffic_rdd_analysis.py` — 573 lines):
 
-**However**, DataFrame operations internally use RDDs, so RDD functionality is still utilized under the hood.
+Runs on **real cleaned Parquet data (45.9M+ trips)**, not toy data.
+
+**RDD Operations Used**:
+```python
+# Convert DataFrame to RDD
+trips_rdd = df.rdd.map(lambda row: row.asDict())
+
+# Core RDD operations demonstrated:
+rdd.map()          # Transform rows into key-value pairs
+rdd.filter()       # Filter trips by geography, speed, time
+rdd.reduceByKey()  # Aggregate speeds/counts by cell, hour
+rdd.groupByKey()   # Group trips by zone
+rdd.flatMap()      # Explode trip paths into segments
+rdd.sortByKey()    # Rank congested cells
+rdd.mapValues()    # Compute averages from (sum, count) pairs
+rdd.countByKey()   # Count trips per cell
+rdd.persist()      # Cache intermediate RDDs (StorageLevel.MEMORY_AND_DISK)
+broadcast variable # Broadcast Manhattan bounds to all workers
+```
+
+**6 Analysis Tasks on Real Data**:
+1. **Peak congestion by cell** — reduceByKey + sortByKey on 46M trips
+2. **Manhattan vs outer borough speed comparison** — filter + broadcast variable
+3. **Rush hour trip distribution** — map + reduceByKey on hourly bins
+4. **Speed percentiles per zone** — groupByKey + mapValues + sorted
+5. **Trip distance segmentation** — flatMap + filter + countByKey
+6. **Temporal congestion patterns** — window-based RDD aggregation
+
+**Execution**: Completed in **1,104.2 seconds** on full dataset.
+
+**Note**: The project uses both DataFrame API (primary) and RDD API (analytical), demonstrating proficiency in both paradigms.
 
 ---
 
@@ -359,12 +384,21 @@ cv = CrossValidator(
 #### MLlib Components Used:
 ✅ **VectorAssembler** - Feature vector creation
 ✅ **StandardScaler** - Feature normalization
-✅ **RandomForestClassifier** - Classification algorithm
-✅ **GBTClassifier** - Gradient Boosted Trees (alternative)
-✅ **MulticlassClassificationEvaluator** - Model evaluation
+✅ **RandomForestClassifier** - Classification algorithm (78.56%)
+✅ **GBTClassifier** - Gradient Boosted Trees (wrapped with OneVsRest)
+✅ **OneVsRest** - Meta-classifier for multiclass GBT (79.24% — **best model**)
+✅ **LogisticRegression** - Baseline classifier (76.50%)
+✅ **MulticlassClassificationEvaluator** - Model evaluation (accuracy, F1, precision, recall)
 ✅ **Pipeline** - ML workflow orchestration
 ✅ **CrossValidator** - Hyperparameter tuning
 ✅ **ParamGridBuilder** - Parameter grid creation
+
+#### Multi-Model Comparison Results (499,817 samples):
+| Model | Accuracy | F1 Score | Training Time |
+|-------|----------|----------|---------------|
+| Random Forest (100 trees) | 78.56% | 0.768 | 61.6s |
+| **GBT + OneVsRest** ⭐ | **79.24%** | **0.780** | **165.0s** |
+| Logistic Regression | 76.50% | 0.742 | 6.5s |
 
 ---
 
@@ -372,42 +406,46 @@ cv = CrossValidator(
 
 | Requirement | Status | Implementation Details |
 |------------|--------|------------------------|
-| **Hadoop HDFS** | ✅ Complete | Docker containers, hdfs_utils.py, configured in Spark |
+| **Hadoop HDFS** | ✅ Complete | Docker containers (namenode + 3 datanodes), hdfs_utils.py, 9.9 GB stored |
 | **MapReduce** | ✅ Complete | Implemented via Spark DataFrame operations (modern approach) |
-| **Spark RDD API** | ⚠️ Indirect | Not explicitly used; DataFrame API preferred (industry standard) |
+| **Spark RDD API** | ✅ Complete | `traffic_rdd_analysis.py` — 573 lines, 6 analyses on 45.9M real trips |
 | **Spark DataFrame API** | ✅ Complete | Extensively used in all batch processing scripts |
-| **Spark Dataset API** | ✅ Complete | Implemented in Scala preprocessing module |
+| **Spark Dataset API** | ✅ Complete | Implemented in Scala preprocessing module (406 lines) |
 | **Python Preprocessing** | ✅ Complete | Multiple Python modules for data cleaning and feature engineering |
 | **Scala Preprocessing** | ✅ Complete | Complete Scala implementation with 406 lines of code |
-| **Spark ML (MLlib)** | ✅ Complete | Full pipeline with RF classifier, evaluation, and cross-validation |
+| **Spark ML (MLlib)** | ✅ Complete | 3-model comparison (RF/GBT+OneVsRest/LR), Pipeline, GBT best at 79.24% |
+| **Kafka Streaming** | ✅ Complete | Producer, Spark Structured Streaming consumer, E2E test suite |
+| **Monitoring** | ✅ Complete | Prometheus + Grafana in Docker, Flask /metrics endpoint |
 
 ---
 
 ## 🎯 Additional Features Beyond Requirements
 
-1. **Real-time Streaming**: Kafka integration for live data simulation
-2. **REST API**: Flask-based API with 8 endpoints
-3. **WebSocket**: Real-time dashboard updates
+1. **Real-time Streaming**: Kafka integration with E2E test suite (`streaming_e2e_test.py`)
+2. **REST API**: Flask-based API with 8 endpoints + Prometheus `/metrics`
+3. **WebSocket**: Real-time dashboard updates via Flask-SocketIO
 4. **Interactive Dashboard**: React + TypeScript frontend with Leaflet maps
-5. **Data Persistence**: Parquet format for efficient storage
-6. **Model Serialization**: Joblib for model persistence
-7. **Docker Orchestration**: Complete docker-compose setup
-8. **Documentation**: Comprehensive project documentation
+5. **Data Persistence**: Parquet format for efficient columnar storage
+6. **Model Serialization**: Spark MLlib PipelineModel (native save/load)
+7. **Docker Orchestration**: 13-container docker-compose (HDFS, Kafka, Spark, monitoring)
+8. **Multi-Model Comparison**: RF vs GBT+OneVsRest vs LR with automatic best-model selection
+9. **RDD Analysis**: Dedicated 573-line RDD script on 45.9M real records
+10. **Pipeline Orchestrator**: `run_pipeline_local.py` — master script for full pipeline
+11. **Monitoring**: Prometheus (port 9090) + Grafana (port 3001) dashboards
+12. **HDFS Sync**: All data + models synced to HDFS (9.9 GB)
+13. **Documentation**: IEEE paper, architecture docs, comprehensive guides
 
 ---
 
 ## 📝 Notes
 
-### Why DataFrame/Dataset API instead of RDD?
+### Why both DataFrame AND RDD APIs?
 
-The project uses DataFrame/Dataset API as the primary Spark interface because:
+This project uses **both** APIs to demonstrate full Spark proficiency:
 
-1. **Performance**: DataFrames use Catalyst optimizer and Tungsten execution engine
-2. **Ease of Use**: More intuitive API similar to SQL and Pandas
-3. **Type Safety**: Dataset API provides compile-time type checking (Scala)
-4. **Industry Standard**: Modern Spark applications favor DataFrames
-5. **Optimization**: Automatic query optimization vs manual RDD operations
-6. **Interoperability**: Seamless conversion between DataFrame and RDD when needed
+- **DataFrame API** (primary): Used in data cleaning, feature engineering, model training — benefits from Catalyst optimizer and Tungsten execution
+- **RDD API** (analytical): Used in `traffic_rdd_analysis.py` for fine-grained control — demonstrates map, reduce, filter, broadcast, persist on 45.9M real records
+- **Dataset API** (Scala): Used in `TrafficDataPreprocessor.scala` for type-safe compile-time operations
 
 ### Modern Big Data Stack
 

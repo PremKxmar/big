@@ -254,14 +254,24 @@ c:\sem6-real\vscode2\SmartCityTrafficSystem\data\processed\
 
 | Component | Purpose |
 |-----------|---------|
-| `VectorAssembler` | Combines feature columns into feature vector |
+| `VectorAssembler` | Combines 16 feature columns into feature vector |
 | `StandardScaler` | Normalizes features (mean=0, std=1) |
-| `RandomForestClassifier` | Main classification algorithm (100 trees) |
-| `GBTClassifier` | Alternative: Gradient Boosted Trees |
-| `Pipeline` | Orchestrates ML workflow |
+| `RandomForestClassifier` | 100 trees, maxDepth=10 — 78.56% accuracy |
+| `GBTClassifier` | Gradient Boosted Trees (binary) |
+| `OneVsRest` | Meta-classifier wrapping GBT for 3-class support — **79.24% accuracy (best)** |
+| `LogisticRegression` | Baseline linear model — 76.50% accuracy |
+| `Pipeline` | Orchestrates ML workflow (assembler → scaler → classifier) |
 | `MulticlassClassificationEvaluator` | Evaluates accuracy, precision, recall, F1 |
 | `CrossValidator` | Hyperparameter tuning |
 | `ParamGridBuilder` | Creates parameter grid for tuning |
+
+#### **Multi-Model Comparison (499,817 samples, temporal split):**
+
+| Model | Accuracy | F1 Score | Training Time |
+|-------|----------|----------|---------------|
+| Random Forest (100 trees) | 78.56% | 0.768 | 61.6s |
+| **GBT + OneVsRest** ⭐ | **79.24%** | **0.780** | **165.0s** |
+| Logistic Regression | 76.50% | 0.742 | 6.5s |
 
 #### **ML Pipeline Configuration:**
 ```python
@@ -287,9 +297,10 @@ pipeline = Pipeline(stages=[assembler, scaler, rf])
 #### **Model Output Location:**
 ```
 c:\sem6-real\vscode2\SmartCityTrafficSystem\backend\models\
-├── spark_congestion_model/          # Saved Spark MLlib model
-├── model_info_spark.json            # Model metadata & metrics
-└── feature_columns_spark.json       # Feature column names
+├── spark_congestion_model/          # GBT+OneVsRest PipelineModel (production)
+├── model_info_spark.json            # Production model metadata & metrics
+├── model_comparison.json            # RF vs GBT vs LR comparison results
+└── feature_columns_spark.json       # 16 feature column names
 ```
 
 ---
@@ -313,6 +324,33 @@ c:\sem6-real\vscode2\SmartCityTrafficSystem\backend\models\
 - `kafka_producer.py` - Streams events to Kafka
 - `kafka_api_bridge.py` - API bridge for real-time data
 - `spark_streaming_consumer.py` - Consumes from Kafka with Spark Structured Streaming
+- `streaming_e2e_test.py` - End-to-end streaming pipeline test (802 lines)
+
+---
+
+### 7. RDD API Analysis
+
+#### **Implementation Status**: ✅ Fully Implemented
+
+**File**: `backend/src/batch/traffic_rdd_analysis.py` (573 lines)
+
+Runs on **real cleaned Parquet data (45.9M+ trips)** — not toy/sample data.
+
+**RDD operations used**: `map`, `filter`, `reduceByKey`, `groupByKey`, `flatMap`, `sortByKey`, `mapValues`, `countByKey`, `persist`, broadcast variables
+
+**6 Analysis Tasks**: Peak congestion ranking, Manhattan vs borough speed, rush hour distribution, speed percentiles, trip distance segmentation, temporal congestion patterns.
+
+**Execution time**: 1,104.2 seconds on full dataset.
+
+---
+
+### 8. Monitoring
+
+#### **Implementation Status**: ✅ Fully Implemented
+
+- **Prometheus** (port 9090): Scrapes Flask `/metrics` endpoint
+- **Grafana** (port 3001): Visualization dashboards
+- Docker containers configured in `docker-compose.yml`
 
 ---
 
@@ -321,35 +359,49 @@ c:\sem6-real\vscode2\SmartCityTrafficSystem\backend\models\
 ```
 SmartCityTrafficSystem/
 ├── backend/
-│   ├── docker-compose.yml           # HDFS, Kafka, Spark cluster
-│   ├── HDFS_PIPELINE_README.md      # HDFS usage guide
-│   ├── STREAMING_PIPELINE_README.md # Streaming guide
+│   ├── docker-compose.yml              # HDFS, Kafka, Spark, Prometheus, Grafana
+│   ├── run_pipeline_local.py           # Master pipeline orchestrator
+│   ├── HDFS_PIPELINE_README.md         # HDFS usage guide
+│   ├── STREAMING_PIPELINE_README.md    # Streaming guide
 │   ├── src/
 │   │   ├── batch/
-│   │   │   ├── data_cleaning_spark.py      # PySpark data cleaning
-│   │   │   ├── feature_engineering_spark.py # Feature creation
-│   │   │   ├── model_training_spark.py      # MLlib training
-│   │   │   ├── hdfs_utils.py               # HDFS operations
-│   │   │   └── spark_submit.py             # Cluster submit utility
+│   │   │   ├── data_cleaning_spark.py        # PySpark data cleaning
+│   │   │   ├── feature_engineering_spark.py  # Feature creation
+│   │   │   ├── model_training_spark.py       # Multi-model MLlib (RF/GBT/LR)
+│   │   │   ├── traffic_rdd_analysis.py       # RDD API on 46M real records
+│   │   │   ├── hdfs_utils.py                 # HDFS operations
+│   │   │   └── spark_submit.py               # Cluster submit utility
 │   │   ├── scala/
-│   │   │   ├── TrafficDataPreprocessor.scala # Scala preprocessing
+│   │   │   ├── TrafficDataPreprocessor.scala # Scala Dataset API preprocessing
 │   │   │   └── build.sbt                    # Scala build config
 │   │   ├── streaming/
 │   │   │   ├── kafka_producer.py            # Data producer
 │   │   │   ├── kafka_api_bridge.py          # API bridge
-│   │   │   └── spark_streaming_consumer.py  # Spark streaming
+│   │   │   ├── spark_streaming_consumer.py  # Spark Structured Streaming
+│   │   │   └── streaming_e2e_test.py        # E2E streaming test (802 lines)
 │   │   ├── api/
-│   │   │   └── app.py                       # Flask REST API
+│   │   │   └── app.py                       # Flask REST API + Prometheus metrics
 │   │   └── config/
-│   │       └── settings.py                  # Configuration
-│   ├── models/                              # Trained models
+│   │       └── spark_config.py              # Centralized Spark/HDFS config
+│   ├── models/
+│   │   ├── spark_congestion_model/          # GBT+OneVsRest PipelineModel
+│   │   ├── model_info_spark.json            # Production model metadata
+│   │   ├── model_comparison.json            # RF vs GBT vs LR results
+│   │   └── feature_columns_spark.json       # 16 feature names
+│   ├── monitoring/
+│   │   ├── prometheus/prometheus.yml
+│   │   └── grafana/
 │   └── data/
 │       └── processed/                       # Processed parquet files
 ├── data/
-│   ├── raw/                                 # Raw CSV (external)
-│   └── processed/                           # Cleaned data
-├── frontend/                                # React dashboard
-└── docs/                                    # Documentation
+│   ├── raw/                                 # Raw CSV (~7 GB)
+│   ├── processed/                           # Cleaned Parquet
+│   └── readable/                            # Human-readable exports
+├── frontend/                                # React + TypeScript dashboard
+├── docs/                                    # IEEE paper, guides
+├── ML_MODEL_STATISTICS_REPORT.md
+├── TECHNICAL_REQUIREMENTS_CHECKLIST.md
+└── PROJECT_REVIEW.md
 ```
 
 ---
@@ -397,13 +449,16 @@ npm run dev
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| **HDFS NameNode** | http://localhost:9870 | Browse HDFS files |
+| **HDFS NameNode** | http://localhost:9870 | Browse HDFS files (9.9 GB stored) |
 | **HDFS DataNode** | http://localhost:9864 | DataNode status |
 | **Kafka UI** | http://localhost:8080 | Topics & messages |
 | **Spark Master** | http://localhost:8081 | Cluster overview |
 | **Spark Worker 1** | http://localhost:8082 | Worker status |
 | **Spark Worker 2** | http://localhost:8083 | Worker status |
+| **Prometheus** | http://localhost:9090 | Metrics scraping |
+| **Grafana** | http://localhost:3001 | Monitoring dashboards |
 | **Application** | http://localhost:3000 | Traffic dashboard |
+| **API Health** | http://localhost:5000/api/health | API status check |
 
 ---
 
@@ -411,13 +466,17 @@ npm run dev
 
 | Requirement | Status | Implementation Details |
 |-------------|--------|------------------------|
-| **HDFS** | ✅ Complete | Docker containers, Web UI at :9870, hdfs_utils.py |
+| **HDFS** | ✅ Complete | Namenode + 3 datanodes, Web UI at :9870, 9.9 GB stored |
 | **Spark Mode** | ✅ Local[*] | All cores, same APIs as cluster mode |
-| **Scala Preprocessing** | ✅ Complete | TrafficDataPreprocessor.scala (406 lines) |
+| **Spark RDD API** | ✅ Complete | `traffic_rdd_analysis.py` (573 lines, 45.9M trips) |
+| **Spark DataFrame API** | ✅ Complete | Used in cleaning, feature eng, model training |
+| **Scala Preprocessing** | ✅ Complete | TrafficDataPreprocessor.scala (406 lines, Dataset API) |
 | **Python Preprocessing** | ✅ Complete | PySpark DataFrame API |
-| **Spark MLlib** | ✅ Complete | RandomForest, Pipeline, Evaluators |
-| **Kafka Streaming** | ✅ Complete | Producer, Consumer, Spark Structured Streaming |
-| **MapReduce Pattern** | ✅ Complete | Implemented via Spark DataFrame (groupBy, agg) |
+| **Spark MLlib** | ✅ Complete | 3-model comparison: RF/GBT+OneVsRest/LR, best=79.24% |
+| **Kafka Streaming** | ✅ Complete | Producer, Spark Structured Streaming, E2E test |
+| **MapReduce Pattern** | ✅ Complete | DataFrame (groupBy, agg) + RDD (map, reduceByKey) |
+| **Monitoring** | ✅ Complete | Prometheus + Grafana in Docker |
+| **Pipeline Orchestrator** | ✅ Complete | `run_pipeline_local.py` — master script |
 
 ---
 
@@ -431,32 +490,15 @@ npm run dev
 
 4. **Processed Data Location (Local)**: `data/processed/` directory contains parquet files
 
-5. **ML Model Location**: `backend/models/spark_congestion_model/`
+5. **ML Model Location**: `backend/models/spark_congestion_model/` (GBT+OneVsRest PipelineModel)
 
-6. **Why Local Mode?**: Simpler for development, sufficient for dataset size, same APIs as cluster mode (portable code)
+6. **RDD Analysis**: `backend/src/batch/traffic_rdd_analysis.py` — 6 analyses on 45.9M real records
+
+7. **Multi-Model Results**: See `ML_MODEL_STATISTICS_REPORT.md` for detailed confusion matrices
+
+8. **Why Local Mode?**: Simpler for development, sufficient for dataset size, same APIs as cluster mode (portable code)
 
 ---
 
-*Document generated: January 8, 2026*
+*Document updated: February 27, 2026*
 *Project: Smart City Traffic System - Big Data Analysis*
-
-
-
-[
-  "hour",
-  "day_of_week", 
-  "month",
-  "is_weekend",
-  "is_rush_hour",
-  "is_night",
-  "cell_lat",
-  "cell_lon",
-  "is_manhattan_int",
-  "prev_trip_count",
-  "prev_avg_speed",
-  "prev_congestion_label",
-  "prev_2h_trip_count",
-  "prev_2h_avg_speed",
-  "historical_avg_trips",
-  "historical_avg_speed"
-]
