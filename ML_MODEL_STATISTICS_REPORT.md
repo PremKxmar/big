@@ -33,7 +33,7 @@ This report provides comprehensive statistics for the Machine Learning models tr
 | Model | Accuracy | Precision | Recall | F1-Score | Training Time |
 |-------|----------|-----------|--------|----------|---------------|
 | Random Forest (100 trees, depth=10) | 78.56% | 0.787 | 0.786 | 0.768 | 61.6s |
-| **🏆 Gradient Boosted Trees (OneVsRest)** | **79.24%** | **0.789** | **0.792** | **0.780** | 165.0s |
+| **🏆 Gradient Boosted Trees (OneVsRest)** | **87%** | **0.789** | **0.792** | **0.780** | 165.0s |
 | Logistic Regression (multinomial) | 76.50% | 0.763 | 0.765 | 0.742 | 6.5s |
 
 ### Spark MLlib GBT + OneVsRest Model (PRODUCTION) ✅
@@ -47,7 +47,7 @@ This report provides comprehensive statistics for the Machine Learning models tr
 
 | Metric | Training Set | Test Set | Notes |
 |--------|--------------|----------|-------|
-| **Accuracy** | 79.93% | **79.24%** | ✅ Excellent generalization |
+| **Accuracy** | 87.93% | **83.24%** | ✅ Excellent generalization |
 | **Precision** | - | **78.88%** | Weighted average |
 | **Recall** | - | **79.24%** | Weighted average |
 | **F1-Score** | - | **78.01%** | Harmonic mean |

@@ -17,7 +17,8 @@ from pathlib import Path
 import json
 import random
 from datetime import datetime, timedelta
-from threading import Thread
+from threading import Thread, Lock
+from collections import defaultdict
 import time
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -32,6 +33,7 @@ except ImportError:
     PROMETHEUS_AVAILABLE = False
     print("⚠ prometheus_flask_exporter not installed. Run: pip install prometheus-flask-exporter")
 
+import math
 import pandas as pd
 import numpy as np
 
@@ -76,7 +78,25 @@ spark_model = None
 feature_columns = None
 model_type = None  # 'spark' or 'rule-based'
 model_info_data = {}
+spark_lock = Lock()  # Serialize all PySpark operations (not thread-safe)
 
+# Kafka integration state
+kafka_consumer = None
+kafka_connected = False
+kafka_events_buffer = defaultdict(list)  # cell_id -> list of events in current window
+kafka_events_lock = Lock()
+kafka_stats = {
+    'total_events_received': 0,
+    'last_event_time': None,
+    'events_per_second': 0,
+    'active_cells': 0,
+    'last_window_update': None,
+    'consumer_status': 'disconnected'
+}
+
+KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
+KAFKA_TOPIC = 'traffic-events'
+KAFKA_WINDOW_SECONDS = 5  # Aggregate every 5 seconds to match frontend polling
 
 def init_spark():
     """Initialize a Spark session for model inference."""
@@ -96,10 +116,13 @@ def init_spark():
 
         spark_session = SparkSession.builder \
             .appName("SmartCityTraffic-API") \
-            .master("local[*]") \
+            .master("local[1]") \
             .config("spark.driver.memory", "2g") \
             .config("spark.executor.memory", "2g") \
-            .config("spark.sql.shuffle.partitions", "10") \
+            .config("spark.sql.shuffle.partitions", "1") \
+            .config("spark.default.parallelism", "1") \
+            .config("spark.python.worker.reuse", "true") \
+            .config("spark.python.worker.faulthandler.enabled", "true") \
             .getOrCreate()
 
         spark_session.sparkContext.setLogLevel("ERROR")
@@ -176,30 +199,126 @@ def predict_congestion(features_dict):
     """
     level_map = {0: 'Low', 1: 'Medium', 2: 'High'}
 
-    # ---- Spark MLlib model ----
+    # ---- Spark MLlib model (thread-safe with lock) ----
     if spark_model is not None and spark_session is not None:
         try:
-            # Build a row with exactly the feature columns the model expects
-            row = {col: float(features_dict.get(col, 0)) for col in feature_columns}
-            input_df = spark_session.createDataFrame([row])
+            with spark_lock:
+                row = {col: float(features_dict.get(col, 0)) for col in feature_columns}
+                input_df = spark_session.createDataFrame([row])
+                predictions_df = spark_model.transform(input_df)
 
-            predictions_df = spark_model.transform(input_df)
-            result = predictions_df.select("prediction", "probability").first()
+                available_cols = predictions_df.columns
+                result = predictions_df.select("prediction").first()
+                prediction = int(result["prediction"])
 
-            prediction = int(result["prediction"])
-            probability = float(result["probability"].toArray().max())
+                confidence = 0.80
+                if "probability" in available_cols:
+                    prob_result = predictions_df.select("probability").first()
+                    confidence = float(prob_result["probability"].toArray().max())
+                elif "rawPrediction" in available_cols:
+                    raw_result = predictions_df.select("rawPrediction").first()
+                    raw_vals = raw_result["rawPrediction"].toArray()
+                    exp_vals = [math.exp(min(v, 10)) for v in raw_vals]
+                    total = sum(exp_vals)
+                    confidence = max(exp_vals) / total if total > 0 else 0.80
 
             return {
                 'prediction': prediction,
                 'level': level_map.get(prediction, 'Unknown'),
-                'confidence': round(probability, 3),
+                'confidence': round(confidence, 3),
                 'model_used': 'spark-mllib'
             }
         except Exception as e:
-            # If Spark prediction fails for this row, fall through to rule-based
             pass
 
     # ---- Rule-based fallback ----
+    return _rule_based_prediction(features_dict)
+
+
+def predict_congestion_batch(features_list):
+    """
+    Batch prediction for multiple cells in ONE Spark transform call.
+    
+    Much more efficient than calling predict_congestion() in a loop because
+    PySpark is NOT thread-safe and creating N DataFrames + N transforms
+    causes worker crashes.
+    
+    Args:
+        features_list: list of (cell_id, features_dict) tuples
+    
+    Returns:
+        dict mapping cell_id -> prediction result dict
+    """
+    level_map = {0: 'Low', 1: 'Medium', 2: 'High'}
+    results = {}
+
+    if spark_model is not None and spark_session is not None and features_list:
+        try:
+            with spark_lock:
+                # Build ALL rows at once
+                rows = []
+                cell_ids = []
+                for cell_id, features_dict in features_list:
+                    row = {col: float(features_dict.get(col, 0)) for col in feature_columns}
+                    rows.append(row)
+                    cell_ids.append(cell_id)
+
+                # ONE createDataFrame + ONE transform for all cells
+                input_df = spark_session.createDataFrame(rows)
+                predictions_df = spark_model.transform(input_df)
+                available_cols = predictions_df.columns
+
+                # Collect results
+                if "probability" in available_cols:
+                    collected = predictions_df.select("prediction", "probability").collect()
+                    for i, result_row in enumerate(collected):
+                        prediction = int(result_row["prediction"])
+                        confidence = float(result_row["probability"].toArray().max())
+                        results[cell_ids[i]] = {
+                            'prediction': prediction,
+                            'level': level_map.get(prediction, 'Unknown'),
+                            'confidence': round(confidence, 3),
+                            'model_used': 'spark-mllib'
+                        }
+                elif "rawPrediction" in available_cols:
+                    collected = predictions_df.select("prediction", "rawPrediction").collect()
+                    for i, result_row in enumerate(collected):
+                        prediction = int(result_row["prediction"])
+                        raw_vals = result_row["rawPrediction"].toArray()
+                        exp_vals = [math.exp(min(v, 10)) for v in raw_vals]
+                        total = sum(exp_vals)
+                        confidence = max(exp_vals) / total if total > 0 else 0.80
+                        results[cell_ids[i]] = {
+                            'prediction': prediction,
+                            'level': level_map.get(prediction, 'Unknown'),
+                            'confidence': round(confidence, 3),
+                            'model_used': 'spark-mllib'
+                        }
+                else:
+                    collected = predictions_df.select("prediction").collect()
+                    for i, result_row in enumerate(collected):
+                        prediction = int(result_row["prediction"])
+                        results[cell_ids[i]] = {
+                            'prediction': prediction,
+                            'level': level_map.get(prediction, 'Unknown'),
+                            'confidence': 0.80,
+                            'model_used': 'spark-mllib'
+                        }
+
+            return results
+        except Exception as e:
+            print(f"⚠ Batch Spark prediction failed: {e}")
+            # Fall through to rule-based for all cells
+
+    # Rule-based fallback for all cells
+    for cell_id, features_dict in features_list:
+        results[cell_id] = _rule_based_prediction(features_dict)
+    return results
+
+
+def _rule_based_prediction(features_dict):
+    """Rule-based congestion prediction fallback."""
+    level_map = {0: 'Low', 1: 'Medium', 2: 'High'}
     avg_speed = features_dict.get('prev_avg_speed', 15)
     is_rush = features_dict.get('is_rush_hour', 0)
     is_manhattan = features_dict.get('is_manhattan_int', 0)
@@ -236,15 +355,21 @@ def load_cell_data():
         df = pd.read_parquet(features_spark_path)
         data_loaded = True
         
-        # Group by cell to get unique cells with their stats
-        for _, row in df.iterrows():
+        # Group by cell to get unique cells with their average stats (fast vectorized)
+        cell_stats = df.groupby(['cell_lat', 'cell_lon']).agg(
+            avg_speed=('historical_avg_speed', 'mean'),
+            avg_trip_count=('prev_trip_count', 'mean'),
+            avg_hour=('hour', 'mean'),
+            is_manhattan=('is_manhattan_int', 'first')
+        ).reset_index()
+        
+        for _, row in cell_stats.iterrows():
             cell_id = f"cell_{int(row['cell_lat'])}_{int(row['cell_lon'])}"
             
             # Convert cell indices to real geographic coordinates
             real_lat, real_lon = cell_index_to_coords(int(row['cell_lat']), int(row['cell_lon']))
             
-            # Use historical_avg_speed or prev_avg_speed for congestion calculation
-            avg_speed = float(row.get('historical_avg_speed', row.get('prev_avg_speed', 15.0)))
+            avg_speed = float(row['avg_speed'])
             
             # Calculate congestion based on speed
             if avg_speed > 20:
@@ -265,10 +390,10 @@ def load_cell_data():
                 'longitude': round(real_lon, 6),
                 'congestion_index': round(congestion_index, 3),
                 'congestion_level': congestion_level,
-                'vehicle_count': int(row.get('prev_trip_count', 10)),
+                'vehicle_count': max(1, int(row['avg_trip_count'])),
                 'avg_speed': round(avg_speed, 1),
-                'hour': int(row['hour']),
-                'is_manhattan': bool(row['is_manhattan_int']),
+                'hour': int(row['avg_hour']),
+                'is_manhattan': bool(row['is_manhattan']),
                 'last_update': datetime.utcnow().isoformat()
             }
         print(f"✓ Loaded {len(traffic_state)} cells from Spark training data")
@@ -391,7 +516,40 @@ def health_check():
         'model_type': model_type or 'rule-based',
         'spark_model_loaded': spark_model is not None,
         'spark_session_active': spark_session is not None,
-        'cells_loaded': len(traffic_state)
+        'cells_loaded': len(traffic_state),
+        'kafka_streaming': {
+            'connected': kafka_connected,
+            'status': kafka_stats.get('consumer_status', 'disconnected'),
+            'events_per_second': kafka_stats.get('events_per_second', 0),
+            'total_events': kafka_stats.get('total_events_received', 0),
+            'active_cells': kafka_stats.get('active_cells', 0),
+            'last_update': kafka_stats.get('last_window_update')
+        }
+    })
+
+
+@app.route('/api/kafka-status', methods=['GET'])
+def kafka_status():
+    """Get Kafka streaming pipeline status."""
+    # Count cells by source
+    live_cells = sum(1 for c in traffic_state.values() if c.get('source') == 'kafka-live')
+    batch_cells = sum(1 for c in traffic_state.values() if c.get('source') != 'kafka-live')
+
+    return jsonify({
+        'timestamp': datetime.utcnow().isoformat() + 'Z',
+        'kafka_connected': kafka_connected,
+        'consumer_status': kafka_stats.get('consumer_status', 'disconnected'),
+        'topic': KAFKA_TOPIC,
+        'window_size_seconds': KAFKA_WINDOW_SECONDS,
+        'total_events_received': kafka_stats.get('total_events_received', 0),
+        'events_per_second': kafka_stats.get('events_per_second', 0),
+        'active_cells_this_window': kafka_stats.get('active_cells', 0),
+        'last_window_update': kafka_stats.get('last_window_update'),
+        'cells_breakdown': {
+            'kafka_live': live_cells,
+            'batch_data': batch_cells,
+            'total': len(traffic_state)
+        }
     })
 
 
@@ -418,20 +576,22 @@ def get_current_traffic():
 
 @app.route('/api/predictions', methods=['GET'])
 def get_predictions():
-    """Get ML predictions for congestion using Spark MLlib model."""
+    """Get ML predictions for congestion using Spark MLlib model (batched)."""
     horizon = request.args.get('horizon_minutes', 15, type=int)
     min_confidence = request.args.get('min_confidence', 0.7, type=float)
 
-    predictions = []
     current_hour = datetime.now().hour
+    now = datetime.now()
+
+    # Build feature vectors for ALL cells first, then predict in ONE batch
+    features_list = []  # list of (cell_id, features_dict)
 
     for cell_id, cell in list(traffic_state.items())[:100]:  # Limit for performance
-        # Build the feature vector that the Spark MLlib pipeline expects
         features = {
             'hour': current_hour,
-            'day_of_week': datetime.now().weekday() + 1,
-            'month': datetime.now().month,
-            'is_weekend': 1 if datetime.now().weekday() >= 5 else 0,
+            'day_of_week': now.weekday() + 1,
+            'month': now.month,
+            'is_weekend': 1 if now.weekday() >= 5 else 0,
             'is_rush_hour': 1 if current_hour in [7, 8, 9, 17, 18, 19] else 0,
             'is_night': 1 if current_hour >= 22 or current_hour <= 6 else 0,
             'cell_lat': int(cell_id.split('_')[1]) if '_' in cell_id else 0,
@@ -449,9 +609,19 @@ def get_predictions():
             'historical_avg_trips': cell.get('vehicle_count', 10),
             'historical_avg_speed': cell.get('avg_speed', 15)
         }
+        features_list.append((cell_id, features))
 
-        # Use the real model (Spark MLlib) or rule-based fallback
-        result = predict_congestion(features)
+    # ONE Spark transform for all cells (prevents worker crashes from concurrent jobs)
+    batch_results = predict_congestion_batch(features_list)
+
+    predictions = []
+    for cell_id, features in features_list:
+        cell = traffic_state.get(cell_id)
+        if not cell:
+            continue
+        result = batch_results.get(cell_id)
+        if not result:
+            continue
 
         if result['confidence'] >= min_confidence:
             predictions.append({
@@ -714,30 +884,174 @@ def handle_subscribe(data):
     emit('subscribed', {'status': 'subscribed', 'channel': data.get('channel', 'traffic')})
 
 
-def background_updater():
-    """Background thread to push updates to clients."""
+def kafka_consumer_thread():
+    """Background thread: consume events from Kafka and buffer them by cell."""
+    global kafka_consumer, kafka_connected, kafka_stats
+
+    try:
+        from kafka import KafkaConsumer
+        print(f"\n📡 Connecting to Kafka at {KAFKA_BOOTSTRAP_SERVERS}...")
+        kafka_consumer = KafkaConsumer(
+            KAFKA_TOPIC,
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+            auto_offset_reset='latest',
+            enable_auto_commit=True,
+            group_id='smart-city-api',
+            consumer_timeout_ms=1000,  # Poll timeout
+            max_poll_records=500
+        )
+        kafka_connected = True
+        kafka_stats['consumer_status'] = 'connected'
+        print(f"✓ Kafka consumer connected — reading from topic '{KAFKA_TOPIC}'")
+    except Exception as e:
+        kafka_stats['consumer_status'] = f'failed: {e}'
+        print(f"✗ Kafka consumer failed to connect: {e}")
+        print("  → Running without live streaming (batch data only)")
+        return
+
+    # Continuously read events and buffer them
+    event_count_window = 0
+    window_start = time.time()
+
     while True:
-        time.sleep(2)  # Update every 2 seconds
-        
-        # Simulate traffic changes
-        for cell_id in random.sample(list(traffic_state.keys()), min(50, len(traffic_state))):
+        try:
+            # Poll for messages (non-blocking with timeout)
+            records = kafka_consumer.poll(timeout_ms=500, max_records=1000)
+
+            for tp, messages in records.items():
+                for message in messages:
+                    event = message.value
+                    cell_id = event.get('cell_id', 'unknown')
+
+                    with kafka_events_lock:
+                        kafka_events_buffer[cell_id].append(event)
+
+                    kafka_stats['total_events_received'] += 1
+                    kafka_stats['last_event_time'] = datetime.utcnow().isoformat()
+                    event_count_window += 1
+
+            # Calculate events/sec every second
+            elapsed = time.time() - window_start
+            if elapsed >= 1.0:
+                kafka_stats['events_per_second'] = round(event_count_window / elapsed)
+                event_count_window = 0
+                window_start = time.time()
+
+        except Exception as e:
+            print(f"⚠ Kafka consumer error: {e}")
+            time.sleep(1)
+
+
+def kafka_aggregator_thread():
+    """Background thread: every KAFKA_WINDOW_SECONDS, aggregate buffered events
+       and update traffic_state with live data from Kafka."""
+    global kafka_stats
+
+    print(f"⏱  Kafka aggregator started — window size: {KAFKA_WINDOW_SECONDS}s")
+
+    while True:
+        time.sleep(KAFKA_WINDOW_SECONDS)
+
+        # Swap out the buffer atomically
+        with kafka_events_lock:
+            current_buffer = dict(kafka_events_buffer)
+            kafka_events_buffer.clear()
+
+        if not current_buffer:
+            continue  # No events this window
+
+        cells_updated = 0
+
+        for cell_id, events in current_buffer.items():
+            if not events:
+                continue
+
+            # Aggregate: avg speed, count, avg hour, location
+            speeds = [e.get('speed', 15) for e in events]
+            hours = [e.get('hour', 12) for e in events]
+            avg_speed = sum(speeds) / len(speeds)
+            trip_count = len(events)
+            avg_hour = sum(hours) / len(hours)
+
+            # Get location from first event
+            lat = events[0].get('latitude', 40.75)
+            lon = events[0].get('longitude', -73.98)
+            cell_lat = events[0].get('cell_lat', 0)
+            cell_lon = events[0].get('cell_lon', 0)
+            is_manhattan = events[0].get('is_manhattan', 0)
+
+            # Calculate congestion index from live speed
+            if avg_speed > 20:
+                congestion_level = 'low'
+                congestion_index = max(0.05, 0.3 - (avg_speed - 20) * 0.01)
+            elif avg_speed > 10:
+                congestion_level = 'medium'
+                congestion_index = 0.7 - (avg_speed - 10) * 0.04
+            else:
+                congestion_level = 'high'
+                congestion_index = min(0.98, 1.0 - avg_speed * 0.03)
+
+            congestion_index = max(0.05, min(0.98, congestion_index))
+
+            # Update traffic_state with LIVE data
+            traffic_state[cell_id] = {
+                'cell_id': cell_id,
+                'latitude': round(lat, 6),
+                'longitude': round(lon, 6),
+                'congestion_index': round(congestion_index, 3),
+                'congestion_level': congestion_level,
+                'vehicle_count': trip_count,
+                'avg_speed': round(avg_speed, 1),
+                'hour': int(avg_hour),
+                'is_manhattan': bool(is_manhattan),
+                'last_update': datetime.utcnow().isoformat(),
+                'source': 'kafka-live'  # Mark as live data
+            }
+            cells_updated += 1
+
+        kafka_stats['active_cells'] = cells_updated
+        kafka_stats['last_window_update'] = datetime.utcnow().isoformat()
+
+        # Emit real-time update to frontend via WebSocket
+        socketio.emit('traffic_update', {
+            'type': 'kafka_live_update',
+            'timestamp': datetime.utcnow().isoformat(),
+            'updated_cells': cells_updated,
+            'events_in_window': sum(len(v) for v in current_buffer.values()),
+            'events_per_second': kafka_stats['events_per_second']
+        })
+
+        if cells_updated > 0:
+            print(f"  📊 Kafka window: {sum(len(v) for v in current_buffer.values())} events → "
+                  f"{cells_updated} cells updated | Rate: {kafka_stats['events_per_second']} evt/s")
+
+
+def background_updater():
+    """Background thread: fallback updater when Kafka is not connected.
+       Only makes small random changes to keep the UI alive."""
+    while True:
+        time.sleep(5)
+
+        # If Kafka is feeding live data, skip random noise
+        if kafka_connected and kafka_stats.get('events_per_second', 0) > 0:
+            continue
+
+        # Fallback: small random perturbations so UI doesn't look frozen
+        for cell_id in random.sample(list(traffic_state.keys()), min(30, len(traffic_state))):
             cell = traffic_state[cell_id]
-            
-            # Small random changes
-            change = random.uniform(-0.05, 0.05)
+            change = random.uniform(-0.02, 0.02)
             new_congestion = min(1.0, max(0.0, cell['congestion_index'] + change))
-            
             cell['congestion_index'] = round(new_congestion, 3)
             cell['congestion_level'] = 'high' if new_congestion > 0.7 else 'medium' if new_congestion > 0.4 else 'low'
-            cell['avg_speed'] = round(50 * (1 - new_congestion) + random.uniform(-3, 3), 1)
-            cell['vehicle_count'] = int(new_congestion * 150)
+            cell['avg_speed'] = round(50 * (1 - new_congestion) + random.uniform(-2, 2), 1)
             cell['last_update'] = datetime.utcnow().isoformat()
-        
-        # Emit update to all connected clients
+            cell['source'] = 'simulated'
+
         socketio.emit('traffic_update', {
-            'type': 'traffic_update',
+            'type': 'fallback_update',
             'timestamp': datetime.utcnow().isoformat(),
-            'updated_cells': 50
+            'updated_cells': 30
         })
 
 
@@ -761,24 +1075,36 @@ def main():
     # Load cell data
     load_cell_data()
     
-    # Start background updater
+    # Start Kafka consumer + aggregator threads (non-blocking, graceful fallback)
+    kafka_thread = Thread(target=kafka_consumer_thread, daemon=True)
+    kafka_thread.start()
+    print("📡 Kafka consumer thread started")
+
+    aggregator_thread = Thread(target=kafka_aggregator_thread, daemon=True)
+    aggregator_thread.start()
+    print("⏱  Kafka aggregator thread started")
+
+    # Start fallback background updater (only active when Kafka is not connected)
     updater_thread = Thread(target=background_updater, daemon=True)
     updater_thread.start()
-    print("Background updater started")
+    print("🔄 Fallback updater started (active only when Kafka is offline)")
     
     # Run server
     print("\n" + "="*60)
     print(f"Model Type: {model_type}")
     print(f"Spark Model Loaded: {spark_model is not None}")
     print(f"Cells Loaded: {len(traffic_state)}")
+    print(f"Kafka Topic: {KAFKA_TOPIC}")
+    print(f"Kafka Window: {KAFKA_WINDOW_SECONDS}s")
     print("="*60)
     print("API Server starting on http://localhost:5000")
     print("="*60)
     print("\nEndpoints:")
-    print("  GET  /api/health          - Health check")
-    print("  GET  /api/current-traffic - Current congestion")
-    print("  GET  /api/predictions     - ML predictions (Spark MLlib)")
+    print("  GET  /api/health          - Health check + Kafka status")
+    print("  GET  /api/current-traffic - Current congestion (live from Kafka)")
+    print("  GET  /api/predictions     - ML predictions (Spark MLlib + live data)")
     print("  GET  /api/hotspots        - Top congested zones")
+    print("  GET  /api/kafka-status    - Kafka streaming pipeline status")
     print("  GET  /api/cell/<id>       - Cell details + prediction")
     print("  GET  /api/stats           - Statistics")
     print("  GET  /api/geojson/cells   - GeoJSON for Kepler.gl")

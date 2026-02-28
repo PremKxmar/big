@@ -38,7 +38,7 @@ from pyspark.ml import PipelineModel
 
 # Configuration
 KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
-KAFKA_TOPIC = 'taxi-trips'
+KAFKA_TOPIC = 'traffic-events'
 HDFS_NAMENODE = 'hdfs://localhost:9000'
 SPARK_MASTER_CLUSTER = 'spark://localhost:7077'
 
@@ -52,28 +52,21 @@ LOCAL_CHECKPOINT_PATH = str(Path(__file__).parent.parent.parent / 'data' / 'chec
 
 
 def get_taxi_event_schema():
-    """Define schema for incoming Kafka taxi events."""
+    """Define schema for incoming Kafka taxi events (matches kafka_producer.py output)."""
     return StructType([
         StructField("event_id", StringType(), True),
-        StructField("event_time", StringType(), True),
-        StructField("pickup_datetime", StringType(), True),
-        StructField("dropoff_datetime", StringType(), True),
-        StructField("pickup_lat", DoubleType(), True),
-        StructField("pickup_lon", DoubleType(), True),
-        StructField("dropoff_lat", DoubleType(), True),
-        StructField("dropoff_lon", DoubleType(), True),
-        StructField("trip_distance", DoubleType(), True),
-        StructField("duration_minutes", DoubleType(), True),
-        StructField("speed_mph", DoubleType(), True),
-        StructField("passenger_count", IntegerType(), True),
-        StructField("fare_amount", DoubleType(), True),
+        StructField("timestamp", StringType(), True),
+        StructField("vehicle_id", StringType(), True),
+        StructField("latitude", DoubleType(), True),
+        StructField("longitude", DoubleType(), True),
         StructField("cell_id", StringType(), True),
         StructField("cell_lat", IntegerType(), True),
         StructField("cell_lon", IntegerType(), True),
+        StructField("speed", DoubleType(), True),
+        StructField("heading", IntegerType(), True),
+        StructField("trip_id", StringType(), True),
         StructField("hour", IntegerType(), True),
         StructField("day_of_week", IntegerType(), True),
-        StructField("month", IntegerType(), True),
-        StructField("year", IntegerType(), True),
         StructField("is_weekend", IntegerType(), True),
         StructField("is_rush_hour", IntegerType(), True),
         StructField("is_night", IntegerType(), True),
@@ -201,7 +194,7 @@ def add_congestion_prediction(df, model=None):
                 (col("is_rush_hour") == 1) & (col("is_manhattan") == 1),
                 "High"
             ).when(
-                (col("is_rush_hour") == 1) | (col("speed_mph") < 10),
+                (col("is_rush_hour") == 1) | (col("speed") < 10),
                 "Medium"
             ).otherwise("Low")
         ).withColumn(
@@ -215,10 +208,10 @@ def add_congestion_prediction(df, model=None):
 def create_aggregations(df):
     """Create windowed aggregations for real-time analytics."""
     
-    # Convert event_time to timestamp
+    # Convert timestamp to timestamp type
     df_with_ts = df.withColumn(
         "event_timestamp",
-        to_timestamp(col("event_time"))
+        to_timestamp(col("timestamp"))
     )
     
     # Aggregate by cell_id over 1-minute windows
@@ -232,11 +225,9 @@ def create_aggregations(df):
         ) \
         .agg(
             count("*").alias("trip_count"),
-            avg("speed_mph").alias("avg_speed"),
-            avg("trip_distance").alias("avg_distance"),
-            spark_max("speed_mph").alias("max_speed"),
-            spark_min("speed_mph").alias("min_speed"),
-            avg("fare_amount").alias("avg_fare")
+            avg("speed").alias("avg_speed"),
+            spark_max("speed").alias("max_speed"),
+            spark_min("speed").alias("min_speed")
         )
     
     # Add congestion level based on aggregates
@@ -305,7 +296,7 @@ def process_batch(df, epoch_id, model=None):
         # Show sample
         print(f"\n--- Batch {epoch_id} ---")
         predicted_df.select(
-            "cell_id", "hour", "speed_mph", "congestion_level", "is_manhattan"
+            "cell_id", "hour", "speed", "congestion_level", "is_manhattan"
         ).show(10, truncate=False)
 
 
