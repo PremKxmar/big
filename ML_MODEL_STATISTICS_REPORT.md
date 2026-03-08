@@ -47,7 +47,7 @@ This report provides comprehensive statistics for the Machine Learning models tr
 
 | Metric | Training Set | Test Set | Notes |
 |--------|--------------|----------|-------|
-| **Accuracy** | 87.93% | **83.24%** | ✅ Excellent generalization |
+| **Accuracy** | 87.93% | **u.24%** | ✅ Excellent generalization |
 | **Precision** | - | **78.88%** | Weighted average |
 | **Recall** | - | **79.24%** | Weighted average |
 | **F1-Score** | - | **78.01%** | Harmonic mean |
