@@ -70,6 +70,10 @@ docker-compose.override.yml
 spark-warehouse/
 metastore_db/
 derby.log
+# Spark model binary stages (large parquet + crc files)
+models/spark_congestion_model/stages/
+*.snappy.parquet
+*.crc
 
 # ----- Kafka -----
 kafka-logs/

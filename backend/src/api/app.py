@@ -99,7 +99,7 @@ KAFKA_TOPIC = 'traffic-events'
 KAFKA_WINDOW_SECONDS = 5  # Aggregate every 5 seconds to match frontend polling
 
 def init_spark():
-    """Initialize a Spark session for model inference (connects to cluster)."""
+    """Initialize a Spark session for model inference."""
     global spark_session
 
     try:
@@ -114,43 +114,23 @@ def init_spark():
 
         from pyspark.sql import SparkSession
 
-        # Connect to Spark cluster for model inference
-        SPARK_MASTER = "spark://localhost:7077"
-        host_ip = "172.21.0.1"  # Docker network gateway
-
         spark_session = SparkSession.builder \
             .appName("SmartCityTraffic-API") \
-            .master(SPARK_MASTER) \
+            .master("local[1]") \
             .config("spark.driver.memory", "2g") \
             .config("spark.executor.memory", "2g") \
             .config("spark.sql.shuffle.partitions", "1") \
             .config("spark.default.parallelism", "1") \
             .config("spark.python.worker.reuse", "true") \
             .config("spark.python.worker.faulthandler.enabled", "true") \
-            .config("spark.submit.deployMode", "client") \
-            .config("spark.driver.host", host_ip) \
-            .config("spark.driver.bindAddress", "0.0.0.0") \
             .getOrCreate()
 
         spark_session.sparkContext.setLogLevel("ERROR")
-        print(f"✓ Spark session initialized in CLUSTER mode ({SPARK_MASTER})")
+        print("✓ Spark session initialized for model inference")
         return True
     except Exception as e:
-        print(f"⚠ Could not connect to Spark cluster: {e}")
-        print("  Falling back to local Spark session...")
-        try:
-            spark_session = SparkSession.builder \
-                .appName("SmartCityTraffic-API") \
-                .master("local[1]") \
-                .config("spark.driver.memory", "2g") \
-                .config("spark.sql.shuffle.partitions", "1") \
-                .getOrCreate()
-            spark_session.sparkContext.setLogLevel("ERROR")
-            print("✓ Spark session initialized in LOCAL fallback mode")
-            return True
-        except Exception as e2:
-            print(f"✗ Could not initialize Spark at all: {e2}")
-            return False
+        print(f"✗ Could not initialize Spark: {e}")
+        return False
 
 
 def load_model():

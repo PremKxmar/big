@@ -23,15 +23,6 @@ PROCESSED_DIR = DATA_DIR / "processed"
 RAW_DIR = Path(r"c:\sem6-real\bigdata\vscode")  # Local raw data location
 
 # =============================================================================
-# DEPLOYMENT MODE — Change this to switch the entire pipeline
-# =============================================================================
-
-DEPLOYMENT_MODE = {
-    "use_cluster": True,     # True = Spark cluster (docker), False = local[*]
-    "use_hdfs": True,        # True = HDFS storage, False = local filesystem
-}
-
-# =============================================================================
 # SPARK CONFIGURATION
 # =============================================================================
 
@@ -137,8 +128,8 @@ def setup_windows_hadoop():
 
 def create_spark_session(
     app_name: str,
-    use_cluster: bool = DEPLOYMENT_MODE["use_cluster"],
-    use_hdfs: bool = DEPLOYMENT_MODE["use_hdfs"],
+    use_cluster: bool = False,
+    use_hdfs: bool = False,
     driver_memory: str = None,
     executor_memory: str = None,
     enable_kafka: bool = False
@@ -312,6 +303,18 @@ def get_traffic_event_schema():
 
 
 if __name__ == "__main__":
+    # Test configuration
+    print("Smart City Traffic - Configuration Test")
+    print("=" * 60)
+    print(f"Project Root: {PROJECT_ROOT}")
+    print(f"Data Directory: {DATA_DIR}")
+    print(f"Models Directory: {MODELS_DIR}")
+    print()
+    print("Spark Config:", SPARK_CONFIG)
+    print()
+    print("HDFS Config:", HDFS_CONFIG)
+    print()
+    print("Kafka Config:", KAFKA_CONFIG)
     # Test configuration
     print("Smart City Traffic - Configuration Test")
     print("=" * 60)

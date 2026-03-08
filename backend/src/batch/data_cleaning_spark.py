@@ -309,12 +309,12 @@ def main():
     """Main execution function."""
     # Parse arguments
     parser = argparse.ArgumentParser(description="Spark Data Cleaning for Smart City Traffic")
-    parser.add_argument("--local", action="store_true", help="Run in local mode instead of cluster")
-    parser.add_argument("--no-hdfs", action="store_true", help="Use local filesystem instead of HDFS")
+    parser.add_argument("--hdfs", action="store_true", help="Use HDFS for input/output")
+    parser.add_argument("--cluster", action="store_true", help="Submit to Spark cluster")
     args = parser.parse_args()
     
-    use_hdfs = not args.no_hdfs       # Default: HDFS ON (cluster mode)
-    use_cluster = not args.local      # Default: Cluster ON
+    use_hdfs = args.hdfs
+    use_cluster = args.cluster
     
     print("\n" + "=" * 60)
     print("SMART CITY TRAFFIC - SPARK DATA CLEANING")

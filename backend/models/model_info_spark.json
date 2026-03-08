@@ -1,6 +1,6 @@
 {
-  "model_type": "Spark MLlib GBT + OneVsRest (50 iters, depth=8)",
-  "trained_at": "2026-02-27T13:36:27.499676",
+  "model_type": "Spark MLlib Gradient Boosted Trees",
+  "trained_at": "2026-03-08T13:40:47.386623",
   "spark_model_path": "C:\\sem6-real\\vscode2\\SmartCityTrafficSystem\\backend\\models\\spark_congestion_model",
   "features": [
     "hour",
@@ -21,7 +21,7 @@
     "historical_avg_speed"
   ],
   "metrics": {
-    "train_accuracy": 0.7993,
+    "train_accuracy": 0.7994,
     "test_accuracy": 0.7924,
     "test_precision": 0.7888,
     "test_recall": 0.7924,
@@ -38,63 +38,63 @@
     "high": "< 10 mph"
   },
   "feature_importance": {
-    "historical_avg_speed": 0.3162,
-    "prev_avg_speed": 0.1859,
-    "historical_avg_trips": 0.0939,
-    "hour": 0.0858,
-    "prev_trip_count": 0.0671,
-    "prev_2h_avg_speed": 0.0553,
+    "historical_avg_speed": 0.3149,
+    "prev_avg_speed": 0.1865,
+    "historical_avg_trips": 0.0934,
+    "hour": 0.0856,
+    "prev_trip_count": 0.067,
+    "prev_2h_avg_speed": 0.0554,
     "cell_lon": 0.0382,
-    "day_of_week": 0.0376,
-    "cell_lat": 0.0363,
-    "prev_2h_trip_count": 0.0274,
-    "is_weekend": 0.0245,
-    "is_rush_hour": 0.0121,
-    "month": 0.0069,
-    "is_night": 0.0064,
-    "prev_congestion_label": 0.0036,
-    "is_manhattan_int": 0.0029
+    "day_of_week": 0.0379,
+    "cell_lat": 0.0371,
+    "prev_2h_trip_count": 0.0272,
+    "is_weekend": 0.0242,
+    "is_rush_hour": 0.0123,
+    "month": 0.007,
+    "is_night": 0.0067,
+    "prev_congestion_label": 0.0038,
+    "is_manhattan_int": 0.0028
   },
   "confusion_matrix": {
     "Low": {
-      "Low": 11976,
-      "Medium": 9450,
-      "High": 42
+      "Low": 11971,
+      "Medium": 9456,
+      "High": 41
     },
     "Medium": {
       "Low": 3953,
-      "Medium": 80287,
-      "High": 2736
+      "Medium": 80289,
+      "High": 2734
     },
     "High": {
-      "Low": 276,
-      "Medium": 10365,
-      "High": 10122
+      "Low": 273,
+      "Medium": 10360,
+      "High": 10130
     }
   },
   "classification_report": {
     "Low": {
-      "precision": 0.739,
-      "recall": 0.5579,
-      "f1_score": 0.6358,
+      "precision": 0.7391,
+      "recall": 0.5576,
+      "f1_score": 0.6357,
       "support": 21468
     },
     "Medium": {
-      "precision": 0.8021,
+      "precision": 0.802,
       "recall": 0.9231,
       "f1_score": 0.8583,
       "support": 86976
     },
     "High": {
-      "precision": 0.7847,
-      "recall": 0.4875,
-      "f1_score": 0.6014,
+      "precision": 0.785,
+      "recall": 0.4879,
+      "f1_score": 0.6018,
       "support": 20763
     }
   },
   "hdfs_mode": false,
   "notes": [
-    "Model uses Spark MLlib GBT + OneVsRest (50 iters, depth=8)",
+    "Model uses Spark MLlib Gradient Boosted Trees",
     "avg_speed NOT included in features (prevents data leakage)",
     "Temporal train/test split (Jan-Feb train, March test)",
     "Uses lagged features for true prediction",

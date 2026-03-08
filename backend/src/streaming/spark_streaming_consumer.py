@@ -302,16 +302,14 @@ def process_batch(df, epoch_id, model=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Spark Structured Streaming Consumer')
-    parser.add_argument('--local', action='store_true', help='Run in local mode instead of cluster')
-    parser.add_argument('--no-hdfs', action='store_true', help='Use local filesystem instead of HDFS')
+    parser.add_argument('--hdfs', action='store_true', help='Write output to HDFS')
+    parser.add_argument('--cluster', action='store_true', help='Submit to Spark cluster')
     parser.add_argument('--output', choices=['console', 'parquet', 'kafka', 'all'], 
                         default='console', help='Output sink type')
     parser.add_argument('--duration', type=int, default=None, 
                         help='Duration in seconds (None=infinite)')
     
     args = parser.parse_args()
-    args.hdfs = not args.no_hdfs      # Default: HDFS ON
-    args.cluster = not args.local     # Default: Cluster ON
     
     print("""
 ============================================================

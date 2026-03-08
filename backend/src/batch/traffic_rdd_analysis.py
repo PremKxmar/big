@@ -484,10 +484,8 @@ def demonstrate_caching(rdd):
 
 def main():
     parser = argparse.ArgumentParser(description='RDD Analysis on Real Traffic Data')
-    parser.add_argument('--local', action='store_true', help='Run in local mode instead of cluster')
-    parser.add_argument('--no-hdfs', action='store_true', help='Use local filesystem instead of HDFS')
+    parser.add_argument('--hdfs', action='store_true', help='Read data from HDFS')
     args = parser.parse_args()
-    args.hdfs = not args.no_hdfs  # Default: HDFS ON
 
     print("""
 ╔══════════════════════════════════════════════════════════════════════╗
