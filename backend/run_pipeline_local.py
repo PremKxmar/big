@@ -1,27 +1,32 @@
 """
 ============================================================
-SMART CITY TRAFFIC – MASTER PIPELINE ORCHESTRATOR (Local)
+SMART CITY TRAFFIC – MASTER PIPELINE ORCHESTRATOR (Cluster)
 ============================================================
 
-Single command to run the COMPLETE Big Data pipeline end-to-end:
+Single command to run the COMPLETE Big Data pipeline end-to-end
+in CLUSTER MODE (Spark Master + Workers via Docker):
 
-    Step 1  ─  Data Cleaning         (PySpark DataFrame API)
-    Step 2  ─  Feature Engineering    (PySpark Window + Agg)
-    Step 3  ─  Model Training         (RF vs GBT vs LR comparison)
-    Step 4  ─  Start Flask API        (serves Spark MLlib predictions)
+    Step 1  ─  Data Cleaning         (PySpark DataFrame API → Spark Cluster)
+    Step 2  ─  Feature Engineering    (PySpark Window + Agg → Spark Cluster)
+    Step 3  ─  Model Training         (RF vs GBT vs LR → Spark Cluster)
+    Step 4  ─  Start Flask API        (serves Spark MLlib predictions via Cluster)
     Step 5  ─  (Optional) Kafka Streaming demo
+
+Prerequisites:
+    docker-compose up -d   (start HDFS, Spark, Kafka containers)
 
 Usage:
     cd backend
-    python run_pipeline_local.py                   # Steps 1-4
+    python run_pipeline_local.py                   # Steps 1-4 (cluster mode)
     python run_pipeline_local.py --skip-training   # Steps 1-2, then API
     python run_pipeline_local.py --api-only        # Just start API
     python run_pipeline_local.py --all             # Steps 1-5 (Kafka too)
+    python run_pipeline_local.py --local           # Run in local mode (no Docker)
 
 Requirements:
     pip install -r requirements.txt
     Java 8/11/17 + JAVA_HOME set
-    (Optional) docker-compose up -d   for Kafka/HDFS
+    docker-compose up -d   (HDFS + Spark + Kafka)
 ============================================================
 """
 
@@ -134,7 +139,7 @@ def check_prerequisites():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Smart City Traffic — Master Pipeline Orchestrator",
+        description="Smart City Traffic — Master Pipeline Orchestrator (Cluster Mode)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--skip-cleaning", action="store_true",
@@ -147,7 +152,13 @@ def main():
                         help="Only start the API server (skip Steps 1-3)")
     parser.add_argument("--all", action="store_true",
                         help="Run everything including Kafka streaming demo")
+    parser.add_argument("--local", action="store_true",
+                        help="Run in local mode (no Docker required)")
     args = parser.parse_args()
+    
+    # Determine execution mode
+    mode = "LOCAL" if args.local else "CLUSTER"
+    extra_args = ["--local", "--no-hdfs"] if args.local else []
 
     print(r"""
    _____ __  __    _    ____ _____    ____ ___ _______   __
@@ -157,10 +168,11 @@ def main():
   |____/|_|  |_/_/   \_\_| \_\|_|    \____|___| |_|   |_|  
                                                             
   ╔══════════════════════════════════════════════════════╗
-  ║  BIG DATA TRAFFIC ANALYTICS – COMPLETE PIPELINE     ║
+  ║  BIG DATA TRAFFIC ANALYTICS – CLUSTER PIPELINE      ║
   ╚══════════════════════════════════════════════════════╝
 """)
     print(f"  Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Mode: {mode} ({'spark://localhost:7077 + HDFS' if mode == 'CLUSTER' else 'local[*]'})")
     print(f"  Python: {sys.executable}")
     print(f"  Backend: {BACKEND_ROOT}")
 
@@ -180,8 +192,9 @@ def main():
             results.append(("Data Cleaning", True, 0))
         else:
             ok, t = run_step(
-                "Data Cleaning (PySpark DataFrame)",
-                BATCH_DIR / "data_cleaning_spark.py"
+                f"Data Cleaning (PySpark DataFrame — {mode})",
+                BATCH_DIR / "data_cleaning_spark.py",
+                extra_args
             )
             results.append(("Data Cleaning", ok, t))
             if not ok:
@@ -191,8 +204,9 @@ def main():
     # ── Step 2: Feature Engineering ──
     if not args.api_only and not args.skip_features:
         ok, t = run_step(
-            "Feature Engineering (PySpark Window + Aggregation)",
-            BATCH_DIR / "feature_engineering_spark.py"
+            f"Feature Engineering (PySpark Window + Aggregation — {mode})",
+            BATCH_DIR / "feature_engineering_spark.py",
+            extra_args
         )
         results.append(("Feature Engineering", ok, t))
         if not ok:
@@ -202,8 +216,9 @@ def main():
     # ── Step 3: Model Training (RF vs GBT vs LR comparison) ──
     if not args.api_only and not args.skip_training:
         ok, t = run_step(
-            "Model Training (RF vs GBT vs LR + Confusion Matrix)",
-            BATCH_DIR / "model_training_spark.py"
+            f"Model Training (RF vs GBT vs LR + Confusion Matrix — {mode})",
+            BATCH_DIR / "model_training_spark.py",
+            extra_args
         )
         results.append(("Model Training", ok, t))
         if not ok:
@@ -212,8 +227,9 @@ def main():
     # ── Step 4: RDD Analysis Demo ──
     if not args.api_only and args.all:
         ok, t = run_step(
-            "RDD Analysis on Real Traffic Data",
-            BATCH_DIR / "traffic_rdd_analysis.py"
+            f"RDD Analysis on Real Traffic Data — {mode}",
+            BATCH_DIR / "traffic_rdd_analysis.py",
+            extra_args
         )
         results.append(("RDD Analysis", ok, t))
 

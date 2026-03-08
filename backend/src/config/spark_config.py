@@ -23,6 +23,15 @@ PROCESSED_DIR = DATA_DIR / "processed"
 RAW_DIR = Path(r"c:\sem6-real\bigdata\vscode")  # Local raw data location
 
 # =============================================================================
+# DEPLOYMENT MODE — Change this to switch the entire pipeline
+# =============================================================================
+
+DEPLOYMENT_MODE = {
+    "use_cluster": True,     # True = Spark cluster (docker), False = local[*]
+    "use_hdfs": True,        # True = HDFS storage, False = local filesystem
+}
+
+# =============================================================================
 # SPARK CONFIGURATION
 # =============================================================================
 
@@ -128,8 +137,8 @@ def setup_windows_hadoop():
 
 def create_spark_session(
     app_name: str,
-    use_cluster: bool = False,
-    use_hdfs: bool = False,
+    use_cluster: bool = DEPLOYMENT_MODE["use_cluster"],
+    use_hdfs: bool = DEPLOYMENT_MODE["use_hdfs"],
     driver_memory: str = None,
     executor_memory: str = None,
     enable_kafka: bool = False

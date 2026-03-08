@@ -468,12 +468,12 @@ def main():
     """Main execution function — trains RF, GBT, LR and picks the best."""
     # Parse arguments
     parser = argparse.ArgumentParser(description="Spark MLlib Model Training for Smart City Traffic")
-    parser.add_argument("--hdfs", action="store_true", help="Use HDFS for input/output")
-    parser.add_argument("--cluster", action="store_true", help="Submit to Spark cluster")
+    parser.add_argument("--local", action="store_true", help="Run in local mode instead of cluster")
+    parser.add_argument("--no-hdfs", action="store_true", help="Use local filesystem instead of HDFS")
     args = parser.parse_args()
     
-    use_hdfs = args.hdfs
-    use_cluster = args.cluster
+    use_hdfs = not args.no_hdfs       # Default: HDFS ON (cluster mode)
+    use_cluster = not args.local      # Default: Cluster ON
     
     print("\n" + "=" * 60)
     print("SMART CITY TRAFFIC - SPARK MLlib MODEL TRAINING")
